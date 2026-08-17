@@ -1,8 +1,19 @@
-# CLAUDE.md — Turni Infermieri
+# CLAUDE.md — Turni Infermieri v2
 
 ## Project Overview
 
-**Turni Infermieri** (Pronto Soccorso) is a browser-only Italian-language web application for scheduling nurse shifts in an emergency room. It solves the Nurse Scheduling Problem (NSP) with a cyclic Pattern Beam planner plus a greedy + simulated-annealing heuristic (the earlier MILP back-ends HiGHS/GLPK were removed — they were never the ones producing the schedules).
+**Turni Infermieri v2** (Pronto Soccorso) is the enhanced fork of akerbabber/Turni-infermieri,
+deployed on **Vercel** (static site + one serverless function, `api/log.js`, that receives
+anonymous solver telemetry from `reportSolverTelemetry()` in `js/app.js` and writes it to the
+Vercel runtime logs — filter for `[solver-telemetry]`). New in v2: "Prepara mese successivo"
+(auto continuity/carryover), desiderate in the config CSV, human-readable clickable violations,
+solution comparison table, per-nurse hour targets in the grid, full worker re-validation after
+manual edits, per-week feasibility diagnosis, coordinated M/P phase stagger, festivi-aware
+reperibile-diurno repair, long-term night/festivi equity carryover (`equityCarryover` config →
+`ctx.nightCarryover`/`ctx.festiviCarryover`), adaptive auto portfolio, property-based tests
+(`test/property.test.js`).
+
+It is a browser-only Italian-language web application for scheduling nurse shifts in an emergency room. It solves the Nurse Scheduling Problem (NSP) with a cyclic Pattern Beam planner plus a greedy + simulated-annealing heuristic (the earlier MILP back-ends HiGHS/GLPK were removed — they were never the ones producing the schedules).
 
 Zero dependencies. No server. No build step. Open `index.html` in a browser and it works.
 

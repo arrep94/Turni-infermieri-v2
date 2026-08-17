@@ -1,23 +1,31 @@
-# Turni Infermieri — Pronto Soccorso
+# Turni Infermieri v2 — Pronto Soccorso
 
 [![CI](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
-[![Deploy](../../actions/workflows/deploy.yml/badge.svg)](../../actions/workflows/deploy.yml)
 
 Applicazione web per la **generazione automatica dei turni infermieristici** in Pronto Soccorso.
 Nessun server, nessuna installazione: basta aprire `index.html` nel browser.
+
+Evoluzione di [Turni-infermieri](https://github.com/akerbabber/Turni-infermieri) con interfaccia
+e algoritmo potenziati; il deploy di riferimento è su **Vercel** (con telemetria anonima del
+solver nei log runtime via `/api/log`).
 
 ---
 
 ## Funzionalita
 
-- **Wizard a 4 step** — Organico → Regole → Genera → Risultati
-- **Motore di scheduling ibrido** — MILP (HiGHS via WASM) come solver primario, euristica greedy + simulated annealing, e nuovo Pattern Beam a cicli profilo
-- **Modifica interattiva** — click su una cella per cambiare turno manualmente
-- **Soluzioni multiple** — genera e confronta diverse proposte, ordinate per qualita
+- **Wizard a 5 step** — Organico → Regole → Continuità → Genera → Risultati
+- **Motore di scheduling** — Pattern Beam a cicli profilo + euristica greedy con simulated annealing e riparazioni mirate (portfolio adattivo in modalità Auto)
+- **Matrici rigide** — M/P 5 lavoro + 2 riposi adiacenti (fasi coordinate di gruppo), D-N-S-R-R
+- **Prepara mese successivo** — la griglia generata diventa automaticamente continuità, riporto ore ed equità del mese dopo
+- **Equità di lungo periodo** — notti e festivi lavorati si bilanciano tra un mese e l'altro
+- **Desiderate** — turni/riposi richiesti in anticipo, garantiti dal solver e salvati anche nel CSV di configurazione
+- **Modifica interattiva** — click su una cella per cambiare turno; la griglia viene rivalidata con TUTTI i vincoli nel worker
+- **Violazioni leggibili** — nomi reali, spiegazione della regola violata, click per evidenziare la cella
+- **Soluzioni multiple** — tabella di confronto (violazioni, punteggio, equità ore, notti)
 - **Export** — CSV, JSON configurazione, stampa ottimizzata per A4 landscape
 - **Dark mode** — tema chiaro/scuro con toggle
 - **Persistenza locale** — tutto il lavoro e salvato in `localStorage`
-- **100% offline** — funziona anche senza connessione (Tailwind CSS e HiGHS hanno fallback)
+- **100% offline** — funziona anche senza connessione (Tailwind CSS ha fallback)
 
 ## Quick Start
 
