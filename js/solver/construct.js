@@ -477,28 +477,61 @@ function construct(ctx) {
   // on the same calendar days (which would sink M/P coverage twice a week).
   const mpLimited = [];
   for (let n = 0; n < numNurses; n++) if (isMPCycleLimitedNurse(nurseProps[n])) mpLimited.push(n);
-  mpLimited.forEach((n, mpIdx) => {
+
+  // Coordinated phase assignment: instead of spreading the phase offsets
+  // uniformly (blind to where the rests actually land), assign each nurse the
+  // allowed cut whose two R days fall on the least-loaded cycle offsets so far.
+  // This flattens the number of M/P-matrix nurses resting on any given day —
+  // the group-level guarantee the per-nurse greedy could not give.
+  const mpCutChoices = new Map();
+  {
+    const restLoad = {};
+    for (const n of mpLimited) {
+      const patterns = getAllowedMPCyclePatterns(nurseProps[n]);
+      const cycleLen = patterns[0].length;
+      // Allowed phase offsets: the R-R pair must stay adjacent INSIDE the month —
+      // no lone second R on day 1 (unless the previous month really ended with the
+      // first R) and no lone first R on the last day of the month.
+      const prevShift = getPrevTailShift(ctx, n);
+      const allowedCuts = [];
+      for (let cut = 0; cut < cycleLen; cut++) {
+        if (cut === cycleLen - 1 && prevShift !== 'R') continue;
+        if ((cut + numDays - 1) % cycleLen === cycleLen - 2) continue;
+        allowedCuts.push(cut);
+      }
+      if (allowedCuts.length === 0) {
+        mpCutChoices.set(n, 0);
+        continue;
+      }
+      if (!restLoad[cycleLen]) restLoad[cycleLen] = new Array(cycleLen).fill(0);
+      const load = restLoad[cycleLen];
+      // R days sit on the last two slots of every canonical M/P pattern; with
+      // phase cut c they land on month offsets (slot − c) mod cycleLen.
+      const restOffsets = cut => [
+        (cycleLen - 2 - cut + cycleLen) % cycleLen,
+        (cycleLen - 1 - cut + cycleLen) % cycleLen,
+      ];
+      let bestCut = allowedCuts[0];
+      let bestLoad = Infinity;
+      for (const cut of allowedCuts) {
+        const [r1, r2] = restOffsets(cut);
+        // Primary criterion: keep the peak low; tie-break on the sum.
+        const cutLoad = Math.max(load[r1], load[r2]) * 100 + load[r1] + load[r2];
+        if (cutLoad < bestLoad) {
+          bestLoad = cutLoad;
+          bestCut = cut;
+        }
+      }
+      const [r1, r2] = restOffsets(bestCut);
+      load[r1]++;
+      load[r2]++;
+      mpCutChoices.set(n, bestCut);
+    }
+  }
+
+  mpLimited.forEach(n => {
     const patterns = getAllowedMPCyclePatterns(nurseProps[n]);
-    const cycleLen = patterns[0].length;
-    // Allowed phase offsets: the R-R pair must stay adjacent INSIDE the month —
-    // no lone second R on day 1 (unless the previous month really ended with the
-    // first R) and no lone first R on the last day of the month.
-    const prevShift = getPrevTailShift(ctx, n);
-    const allowedCuts = [];
-    for (let cut = 0; cut < cycleLen; cut++) {
-      if (cut === cycleLen - 1 && prevShift !== 'R') continue;
-      if ((cut + numDays - 1) % cycleLen === cycleLen - 2) continue;
-      allowedCuts.push(cut);
-    }
-    let phaseCut = 0;
-    if (allowedCuts.length > 0) {
-      phaseCut =
-        mpLimited.length > 1
-          ? allowedCuts[Math.floor((mpIdx * allowedCuts.length) / mpLimited.length) % allowedCuts.length]
-          : allowedCuts.includes(0)
-            ? 0
-            : allowedCuts[0];
-    }
+    const phaseCut = mpCutChoices.get(n) ?? 0;
     let firstBlock = phaseCut > 0;
     for (let startDay = 0; startDay < numDays; ) {
       let bestPattern = null;

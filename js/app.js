@@ -2071,9 +2071,7 @@ function buildEquityCarryover() {
   };
   const clampDelta = (arr, cap) => {
     const mean = avg(arr);
-    return arr.map(v =>
-      v === null ? 0 : Math.max(-cap, Math.min(cap, Math.round((v - mean) * 10) / 10))
-    );
+    return arr.map(v => (v === null ? 0 : Math.max(-cap, Math.min(cap, Math.round((v - mean) * 10) / 10))));
   };
   const nights = clampDelta(nightsRaw, NIGHT_CARRYOVER_CAP);
   const festivi = clampDelta(festiviRaw, FESTIVI_CARRYOVER_CAP);
@@ -3003,7 +3001,8 @@ const VIOLATION_HINTS = {
   coverage_M_max: 'Più infermieri di mattina del massimo configurato.',
   coverage_P_max: 'Più infermieri di pomeriggio del massimo configurato.',
   coverage_N_max: 'Più infermieri di notte del massimo configurato.',
-  reperibile_mancante: 'In un giorno con notti serve un reperibile notturno idoneo (mattina o smonto secondo il regime).',
+  reperibile_mancante:
+    'In un giorno con notti serve un reperibile notturno idoneo (mattina o smonto secondo il regime).',
   reperibile_diurno_mancante: 'Nei festivi serve un reperibile diurno: un infermiere che fa la notte quel giorno.',
   DD_no_R: 'Dopo due diurni consecutivi è obbligatorio un riposo.',
   DDD: 'Tre diurni consecutivi non sono consentiti.',

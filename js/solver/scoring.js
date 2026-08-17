@@ -627,7 +627,9 @@ function computeScore(schedule, ctx) {
     }
   }
 
-  // Soft: night-count fairness
+  // Soft: night-count fairness. The long-term carryover shifts each nurse's
+  // fair share: who did more nights than average last month (positive
+  // carryover) is steered toward fewer nights this month, and vice versa.
   for (let n = 0; n < numNurses; n++) {
     if (
       nurseProps[n].soloMattine ||
@@ -638,7 +640,8 @@ function computeScore(schedule, ctx) {
     )
       continue;
     const nc = nightCount(schedule, n, numDays);
-    soft += Math.abs(nc - targetNights) * 3;
+    const carry = ctx.nightCarryover ? ctx.nightCarryover[n] || 0 : 0;
+    soft += Math.abs(nc + carry - targetNights) * 3;
   }
 
   // Per-nurse night caps: exceeding the soft cap (maxNights) costs extra soft
@@ -669,6 +672,28 @@ function computeScore(schedule, ctx) {
       const dCounts = dEligible.map(n => diurniCount(schedule, n, numDays));
       const dAvg = dCounts.reduce((a, b) => a + b, 0) / dCounts.length;
       for (const dc of dCounts) soft += Math.abs(dc - dAvg) * 3;
+    }
+  }
+
+  // Soft: worked Sundays/holidays fairness with long-term carryover — who
+  // worked more festivi than average last month works fewer this month.
+  // solo_mattine nurses are excluded (weekends are structurally pinned to R).
+  {
+    const festDays = [];
+    for (let d = 0; d < numDays; d++) if (ctx.festivi[d]) festDays.push(d);
+    const festEligible = [];
+    for (let n = 0; n < numNurses; n++) if (!nurseProps[n].soloMattine) festEligible.push(n);
+    if (festDays.length > 0 && festEligible.length >= 2) {
+      const counts = festEligible.map(n => {
+        let c = 0;
+        for (const d of festDays) {
+          const s = schedule[n][d];
+          if (s === 'M' || s === 'P' || s === 'D' || s === 'N') c++;
+        }
+        return c + (ctx.festiviCarryover ? ctx.festiviCarryover[n] || 0 : 0);
+      });
+      const avg = counts.reduce((a, b) => a + b, 0) / counts.length;
+      for (const c of counts) soft += Math.abs(c - avg) * 2;
     }
   }
 

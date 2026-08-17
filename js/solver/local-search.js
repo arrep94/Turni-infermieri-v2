@@ -210,6 +210,7 @@ function localSearch(schedule, ctx, maxIter, timeLimitSec) {
     repaired = repairSplitRestDays(repaired, ctx);
     repaired = repairDayCoverage(repaired, ctx);
     repaired = repairReperibile(repaired, ctx);
+    repaired = repairReperibileDiurnoFestivo(repaired, ctx);
     repaired = repairWeeklyRestDeficits(repaired, ctx);
     repaired = repairRestExcess(repaired, ctx);
     if (repaired.map(row => row.join('|')).join('\n') === beforePass) break;
@@ -512,6 +513,43 @@ function repairReperibile(schedule, ctx) {
         done = true;
       }
     }
+  }
+
+  return repaired;
+}
+
+/**
+ * Fix missing day on-calls on Sundays/holidays (reperibile diurno festivo):
+ * every festivo needs a nurse working the NIGHT that day. When night coverage
+ * minimums are low (down to minCovN = 0) the planners may leave a festivo
+ * without any night — this repair places a full night block on an eligible
+ * nurse, score-guided, so the hard reperibile_diurno_mancante violation clears.
+ */
+function repairReperibileDiurnoFestivo(schedule, ctx) {
+  if (!ctx.reperibileDiurnoFestivo) return schedule;
+  const { numDays, numNurses, maxCovN } = ctx;
+  let repaired = schedule;
+
+  for (let d = 0; d < numDays; d++) {
+    if (!ctx.festivi[d]) continue;
+    if (hasNightOnDay(repaired, d, numNurses)) continue;
+    if (dayCoverage(repaired, d, numNurses).N >= maxCovN) continue;
+
+    const currentScore = computeScore(repaired, ctx);
+    let best = null;
+    for (let n = 0; n < numNurses; n++) {
+      if (!canAddNightBlockForNurse(repaired, ctx, n, d)) continue;
+      const candidate = addNightBlockCandidate(repaired, ctx, n, d);
+      if (!candidate) continue;
+      const score = computeScore(candidate, ctx);
+      // Accept only real improvements: the cleared on-call violation must not
+      // be paid with new hard violations elsewhere.
+      if (score.hard >= currentScore.hard) continue;
+      if (!best || score.hard < best.score.hard || (score.hard === best.score.hard && score.total < best.score.total)) {
+        best = { schedule: candidate, score };
+      }
+    }
+    if (best) repaired = best.schedule;
   }
 
   return repaired;

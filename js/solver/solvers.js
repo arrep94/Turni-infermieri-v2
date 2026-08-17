@@ -110,6 +110,28 @@ async function solve(config, numSolutions, timeBudget, untilZeroViolations, solv
     `[Solver] Problem: ${ctx.numNurses} nurses, ${ctx.numDays} days, coverage M:${ctx.minCovM}-${ctx.maxCovM} P:${ctx.minCovP}-${ctx.maxCovP} N:${ctx.minCovN}-${ctx.maxCovN} D:${ctx.minCovD}-${ctx.maxCovD}`
   );
 
+  // Adaptive portfolio state for 'auto': strategies that produced the winning
+  // schedule in earlier solutions earn a bigger share of the later budgets
+  // (with a floor so the others always stay in the race).
+  const methodWins = { night_first_pattern: 0, pattern: 0, fallback: 0 };
+
+  function portfolioShares() {
+    const total = methodWins.night_first_pattern + methodWins.pattern + methodWins.fallback;
+    if (total === 0) return { night_first_pattern: 0.4, pattern: 0.3, fallback: 0.3 };
+    const FLOOR = 0.15;
+    const raw = {
+      night_first_pattern: Math.max(FLOOR, (methodWins.night_first_pattern + 0.5) / (total + 1.5)),
+      pattern: Math.max(FLOOR, (methodWins.pattern + 0.5) / (total + 1.5)),
+      fallback: Math.max(FLOOR, (methodWins.fallback + 0.5) / (total + 1.5)),
+    };
+    const norm = raw.night_first_pattern + raw.pattern + raw.fallback;
+    return {
+      night_first_pattern: raw.night_first_pattern / norm,
+      pattern: raw.pattern / norm,
+      fallback: raw.fallback / norm,
+    };
+  }
+
   /** Generate one batch of solutions */
   async function generateBatch(batchSolutions, batchLabel, seedOffset) {
     const perSolutionBudgetSec = Math.max(1, totalBudget / numSolutions);
@@ -171,9 +193,10 @@ async function solve(config, numSolutions, timeBudget, untilZeroViolations, solv
         if (solverChoice === 'auto' && !solved) {
           progress(pctBase, `${batchLabel}Auto (portfolio pattern + euristica): soluzione ${i + 1}/${numSolutions}…`);
           const autoStart = Date.now();
+          const shares = portfolioShares();
           const candidates = [];
           {
-            const result = solveNightFirstPattern(config, perSolutionBudgetSec * 0.4);
+            const result = solveNightFirstPattern(config, perSolutionBudgetSec * shares.night_first_pattern);
             candidates.push({
               ...result,
               solverMethod: 'night_first_pattern',
@@ -181,11 +204,16 @@ async function solve(config, numSolutions, timeBudget, untilZeroViolations, solv
             });
           }
           {
-            const result = solvePattern(config, perSolutionBudgetSec * 0.3);
+            const result = solvePattern(config, perSolutionBudgetSec * shares.pattern);
             candidates.push({ ...result, solverMethod: 'pattern', _score: computeScore(result.schedule, ctx) });
           }
           {
-            const improved = localSearch(construct(ctx), ctx, LOCAL_SEARCH_ITERS, perSolutionBudgetSec * 0.3);
+            const improved = localSearch(
+              construct(ctx),
+              ctx,
+              LOCAL_SEARCH_ITERS,
+              perSolutionBudgetSec * shares.fallback
+            );
             const hScore = computeScore(improved, ctx);
             candidates.push({
               schedule: improved,
@@ -198,6 +226,7 @@ async function solve(config, numSolutions, timeBudget, untilZeroViolations, solv
           }
           candidates.sort((a, b) => a._score.hard - b._score.hard || a._score.total - b._score.total);
           const bestCandidate = candidates[0];
+          if (methodWins[bestCandidate.solverMethod] !== undefined) methodWins[bestCandidate.solverMethod]++;
           const elapsed = (Date.now() - autoStart) / 1000;
           console.log(
             `[Solver] Auto portfolio (${elapsed.toFixed(1)}s): ` +

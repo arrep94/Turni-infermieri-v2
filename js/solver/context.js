@@ -14,6 +14,14 @@
 function buildContext(config) {
   const { year, month, nurses, rules, hourDeltas, previousMonthTail } = config;
 
+  // Long-term equity carryover (see buildEquityCarryover in app.js): per-nurse
+  // deltas of nights/worked-festivi vs the roster average in the previous month.
+  // A positive value means the nurse already did MORE than their share and gets
+  // a lower fair-share target this month.
+  const equity = config.equityCarryover || null;
+  const nightCarryover = equity && Array.isArray(equity.nights) ? equity.nights : null;
+  const festiviCarryover = equity && Array.isArray(equity.festivi) ? equity.festivi : null;
+
   // Apply fascia oraria before any hour-dependent computation. 'auto' follows
   // the diurni usage: schedules WITH diurni (maxCoverageD > 0) use the standard
   // hours (M/P 6.2, N 12.2, assenze 6.12), schedules WITHOUT diurni use the
@@ -249,6 +257,8 @@ function buildContext(config) {
     festivi,
     monthlyTargetHours,
     hourDeltas: hourDeltas || null,
+    nightCarryover,
+    festiviCarryover,
     prevTail,
   };
 }
