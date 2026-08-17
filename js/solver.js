@@ -149,6 +149,21 @@ self.onmessage = async function (e) {
       const error = serializeError(err, diagnostics);
       self.postMessage({ type: 'error', message: error.message, error, diagnostics: error.diagnostics });
     }
+  } else if (e.data.type === 'validate') {
+    // Full-constraint validation of an existing (possibly hand-edited) schedule:
+    // returns the same violations/stats the solver itself would report, so manual
+    // edits get the complete rule check instead of the light main-thread one.
+    try {
+      const ctx = buildContext(e.data.config);
+      const schedule = e.data.schedule;
+      const violations = collectViolations(schedule, ctx);
+      const stats = computeStats(schedule, ctx);
+      const score = computeScore(schedule, ctx);
+      self.postMessage({ type: 'validate_result', violations, stats, score: score.total, hard: score.hard });
+    } catch (err) {
+      console.error('[Worker] Validate failed:', err.message, err.stack);
+      self.postMessage({ type: 'validate_error', message: err.message || String(err) });
+    }
   } else if (e.data.type === 'fill_mp') {
     // Fill-only: distribute mornings/afternoons over the free cells of an existing
     // (night-only) schedule, leaving every already-assigned cell untouched.

@@ -1,0 +1,8 @@
+node_modules
+test
+benchmark
+.github
+CLAUDE.md
+HEURISTIC_IMPROVEMENT_PLAN.md
+eslint.config.js
+package-lock.json

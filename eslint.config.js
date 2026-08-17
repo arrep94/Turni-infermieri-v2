@@ -116,6 +116,16 @@ module.exports = [
     },
   },
   {
+    // Vercel serverless functions run in Node
+    files: ['api/**/*.js'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
+  {
     files: ['test/**/*.js'],
     languageOptions: {
       sourceType: 'script',

@@ -611,6 +611,23 @@ html.dark .tag.tag-ferie {
   outline: 2px dashed #14b8a6;
   outline-offset: 1px;
 }
+
+/* Flash highlight when the user clicks a violation in the summary */
+@keyframes cell-flash-pulse {
+  0%,
+  60% {
+    box-shadow: inset 0 0 0 3px #ef4444;
+    background-color: rgba(239, 68, 68, 0.25);
+  }
+  100% {
+    box-shadow: none;
+    background-color: transparent;
+  }
+}
+td.cell-flash,
+th.cell-flash {
+  animation: cell-flash-pulse 2.4s ease-out;
+}
 html.dark .tag.tag-malattia {
   background: #7f1d1d;
   color: #fca5a5;
@@ -782,6 +799,11 @@ html.dark .shift-dropdown {
   border-color: var(--border);
 }
 
+/* Print-only ward-board title (hidden on screen) */
+.print-title {
+  display: none;
+}
+
 /* ---------- Print styles ---------- */
 @media print {
   @page {
@@ -801,8 +823,19 @@ html.dark .shift-dropdown {
   #btn-generate,
   #btn-export,
   #btn-save,
+  #solution-picker,
+  #solver-method-banner,
+  #solver-diagnostics-banner,
   .no-print {
     display: none !important;
+  }
+
+  /* Ward-board title printed above the grid */
+  .print-title {
+    display: block !important;
+    font-size: 14px !important;
+    font-weight: 700;
+    margin-bottom: 4px;
   }
 
   .schedule-wrapper {

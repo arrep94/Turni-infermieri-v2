@@ -976,6 +976,13 @@
               ☀️ Distribuisci mattine/pomeriggi
             </button>
             <button
+              id="btn-prepare-next-month"
+              class="btn px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-semibold rounded-lg shadow transition-colors"
+              title="Usa questa griglia come mese precedente (continuità, riporto ore, equità notti/festivi) e passa alla pianificazione del mese successivo"
+            >
+              📅 Prepara mese successivo
+            </button>
+            <button
               id="btn-export-csv"
               class="btn px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded-lg shadow transition-colors"
               title="Esporta in CSV (separatore punto e virgola, UTF-8 BOM per Excel)"
@@ -1017,6 +1024,7 @@
               <span id="solution-count" class="text-xs text-gray-500 dark:text-slate-400"></span>
             </div>
             <div id="solution-buttons" class="flex flex-wrap gap-2"></div>
+            <div id="solution-compare" class="mt-3 overflow-x-auto"></div>
           </div>
         </div>
 
