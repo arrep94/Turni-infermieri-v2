@@ -1,0 +1,184 @@
+/**
+ * @file solver.js — Web Worker entry point for nursing shift scheduling
+ * @description Runs in a Web Worker context (no DOM access).
+ * @version 2.0.0
+ *
+ * Loads modular solver components via importScripts() and wires up
+ * the Worker message interface. No build step required.
+ *
+ * Module load order (dependency chain):
+ *   1. constants.js  — SHIFT_HOURS, utilities (shuffle, dayOfWeek, etc.)
+ *   2. context.js    — buildContext, getAbsenceShift
+ *   3. scoring.js    — transitionOk, dayCoverage, computeScore, collectViolations, computeStats
+ *   4. construct.js  — construct (greedy heuristic), trySwapMP
+ *   5. local-search.js — localSearch, move functions (setCell, trySwap/Change/Equity/WeeklyRest)
+ *   6. pattern-planner.js — cyclic pattern beam and night-first planners
+ *   7. solvers.js    — solveFallback, solve (heuristic / pattern orchestration)
+ *
+ * Communication with main thread via postMessage/onmessage:
+ *   IN:  {type: 'solve', config, numSolutions, timeBudget, solverMethod}
+ *   OUT: {type: 'progress'|'result'|'error', ...}
+ */
+
+'use strict';
+
+// ---------------------------------------------------------------------------
+// Progress helper (must be defined before modules that reference it)
+// ---------------------------------------------------------------------------
+
+function progress(percent, message) {
+  self.postMessage({ type: 'progress', percent, message });
+}
+
+/**
+ * Convert a thrown worker error into a serializable payload and preserve any
+ * structured diagnostics that were already attached to it. `fallbackDiagnostics`
+ * is used when the thrown error has no embedded diagnostics of its own.
+ * @param {Error} err
+ * @param {object[]} fallbackDiagnostics
+ * @returns {{name: string, code: string, message: string, diagnostics: object[]}}
+ */
+function serializeError(err, fallbackDiagnostics) {
+  const diagnostics = Array.isArray(err?.diagnostics)
+    ? err.diagnostics
+    : Array.isArray(fallbackDiagnostics)
+      ? fallbackDiagnostics
+      : [];
+  return {
+    name: err?.name || 'Error',
+    code: err?.code || 'worker_error',
+    message: err?.message || 'Errore sconosciuto nel worker',
+    diagnostics,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Load solver modules in dependency order
+// ---------------------------------------------------------------------------
+
+importScripts(
+  'solver/constants.js',
+  'solver/context.js',
+  'solver/scoring.js',
+  'solver/construct.js',
+  'solver/local-search.js',
+  'solver/pattern-planner.js',
+  'solver/solvers.js'
+);
+
+// ---------------------------------------------------------------------------
+// Worker interface
+// ---------------------------------------------------------------------------
+
+self.onmessage = async function (e) {
+  if (e.data.type === 'solve') {
+    console.log(
+      '[Worker] Received solve message:',
+      JSON.stringify({
+        solverChoice: e.data.solverChoice,
+        numSolutions: e.data.numSolutions,
+        timeBudget: e.data.timeBudget,
+        untilZeroViolations: e.data.untilZeroViolations,
+        numNurses: e.data.config?.nurses?.length,
+      })
+    );
+    try {
+      const numSolutions = e.data.numSolutions || 1;
+      const timeBudget = e.data.timeBudget || 0;
+      const untilZeroViolations = !!e.data.untilZeroViolations;
+      const solverChoice = e.data.solverChoice || 'auto';
+      const result = await solve(e.data.config, numSolutions, timeBudget, untilZeroViolations, solverChoice);
+      const solutions = result?.solutions || [];
+      const diagnostics = result?.diagnostics || [];
+      const best = solutions[0] || {};
+      console.log(
+        `[Worker] Solve complete: ${solutions.length} solutions, best method="${best.solverMethod}", best score=${best.score}`
+      );
+      self.postMessage({
+        type: 'result',
+        schedule: best.schedule,
+        violations: best.violations || [],
+        stats: best.stats || [],
+        solutions: solutions,
+        solverMethod: best.solverMethod || 'fallback',
+        diagnostics,
+      });
+    } catch (err) {
+      console.error('[Worker] Solve failed with uncaught exception:', err.message, err.stack);
+      const error = serializeError(err);
+      self.postMessage({ type: 'error', message: error.message, error, diagnostics: error.diagnostics });
+    }
+  } else if (e.data.type === 'rebalance') {
+    // Rebalance: take existing schedule and optimise it via local search
+    console.log('[Worker] Received rebalance message');
+    try {
+      progress(5, 'Riassegnazione turni in corso…');
+      const ctx = buildContext(e.data.config);
+      const schedule = e.data.schedule;
+      const timeBudget = e.data.timeBudget || 15;
+
+      progress(10, 'Ottimizzazione locale…');
+      const improved = localSearch(schedule, ctx, LOCAL_SEARCH_ITERS, timeBudget);
+
+      progress(90, 'Validazione…');
+      const violations = collectViolations(improved, ctx);
+      const stats = computeStats(improved, ctx);
+      const score = computeScore(improved, ctx);
+
+      progress(100, 'Fatto!');
+      self.postMessage({
+        type: 'result',
+        schedule: improved,
+        violations: violations,
+        stats: stats,
+        solutions: [{ schedule: improved, violations, stats, score: score.total, solverMethod: 'rebalance' }],
+        solverMethod: 'rebalance',
+      });
+    } catch (err) {
+      console.error('[Worker] Rebalance failed:', err.message, err.stack);
+      const diagnostics = [
+        {
+          source: 'worker',
+          phase: 'rebalance',
+          code: 'worker_error',
+          severity: 'error',
+          userMessage: 'Worker error durante la riassegnazione',
+          detail: err.message || String(err),
+        },
+      ];
+      const error = serializeError(err, diagnostics);
+      self.postMessage({ type: 'error', message: error.message, error, diagnostics: error.diagnostics });
+    }
+  } else if (e.data.type === 'fill_mp') {
+    // Fill-only: distribute mornings/afternoons over the free cells of an existing
+    // (night-only) schedule, leaving every already-assigned cell untouched.
+    console.log('[Worker] Received fill_mp message');
+    try {
+      progress(5, 'Distribuzione mattine e pomeriggi in corso…');
+      const result = solveFillMP(e.data.config, e.data.schedule);
+      progress(100, 'Fatto!');
+      self.postMessage({
+        type: 'result',
+        schedule: result.schedule,
+        violations: result.violations,
+        stats: result.stats,
+        solutions: [{ ...result, solverMethod: 'night_only' }],
+        solverMethod: 'night_only',
+      });
+    } catch (err) {
+      console.error('[Worker] Fill M/P failed:', err.message, err.stack);
+      const diagnostics = [
+        {
+          source: 'worker',
+          phase: 'fill_mp',
+          code: 'worker_error',
+          severity: 'error',
+          userMessage: 'Worker error durante la distribuzione di mattine e pomeriggi',
+          detail: err.message || String(err),
+        },
+      ];
+      const error = serializeError(err, diagnostics);
+      self.postMessage({ type: 'error', message: error.message, error, diagnostics: error.diagnostics });
+    }
+  }
+};
