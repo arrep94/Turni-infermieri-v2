@@ -533,7 +533,18 @@ function repairDoppioD(schedule, ctx) {
   const { numDays, numNurses, nurseProps, pinned } = ctx;
   let repaired = schedule;
 
-  for (let n = 0; n < numNurses; n++) {
+  // Serve the biggest hour deficits first: with limited daily D headroom the
+  // nurses carrying the largest debt (cumulative saldo included via hourDeltas)
+  // must get their recovery D before the others use up the slots.
+  const order = Array.from({ length: numNurses }, (_, i) => i).sort((a, b) => {
+    const defA =
+      ctx.monthlyTargetHours + (ctx.hourDeltas ? ctx.hourDeltas[a] || 0 : 0) - nurseHours(schedule, a, numDays);
+    const defB =
+      ctx.monthlyTargetHours + (ctx.hourDeltas ? ctx.hourDeltas[b] || 0 : 0) - nurseHours(schedule, b, numDays);
+    return defB - defA;
+  });
+
+  for (const n of order) {
     if (!nurseProps[n].diurniENotturni) continue;
     if (countDoppioD(repaired, n, numDays) >= 1) continue;
     // Only when the nurse is meaningfully below the personal target: the extra

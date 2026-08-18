@@ -143,6 +143,7 @@ const CONFIG_CSV_PREVIOUS_TAIL_FIELDS = [
   { key: 'dayMinus1', header: 'Mese prec. -1' },
 ];
 const CONFIG_CSV_DESIDERATE_HEADER = 'Desiderate';
+const CONFIG_CSV_SALDO_HEADER = 'Saldo ore';
 const DESIDERATA_SHIFTS = new Set(['M', 'P', 'D', 'N', 'R']);
 
 // Serialize a nurse's desiderate map for the config CSV: 'YYYY-MM-DD:S|…', sorted by date.
@@ -375,6 +376,9 @@ function normalizeNurse(nurse, index) {
     // Desiderate: requested day assignments for a specific month, keyed by ISO
     // date ('YYYY-MM-DD' → shift code M/P/D/N/R). Honored as pinned cells.
     desiderate: nurse?.desiderate && typeof nurse.desiderate === 'object' ? { ...nurse.desiderate } : {},
+    // Saldo ore cumulativo (ore fatte − monte ore, mese dopo mese): negativo =
+    // debito da recuperare. Aggiornato da "Prepara mese successivo".
+    hourBalance: Number.isFinite(Number(nurse?.hourBalance)) ? Math.round(Number(nurse.hourBalance) * 10) / 10 : 0,
   };
 }
 
@@ -1666,10 +1670,11 @@ function buildConfigCsvRows(cfg) {
       ...CONFIG_CSV_ABSENCE_FIELDS.flatMap(field => [field.startHeader, field.endHeader]),
       ...CONFIG_CSV_PREVIOUS_TAIL_FIELDS.map(field => field.header),
       CONFIG_CSV_DESIDERATE_HEADER,
+      CONFIG_CSV_SALDO_HEADER,
     ],
   ];
   const emptyExtraColumns = new Array(
-    CONFIG_CSV_ABSENCE_FIELDS.length * 2 + CONFIG_CSV_PREVIOUS_TAIL_FIELDS.length + 1
+    CONFIG_CSV_ABSENCE_FIELDS.length * 2 + CONFIG_CSV_PREVIOUS_TAIL_FIELDS.length + 2
   ).fill('');
 
   [
@@ -1700,6 +1705,7 @@ function buildConfigCsvRows(cfg) {
       ]),
       ...normalizedNurse.previousMonthTail.map(shift => shift || ''),
       serializeDesiderate(normalizedNurse.desiderate),
+      normalizedNurse.hourBalance || '',
     ]);
   });
 
@@ -1783,11 +1789,16 @@ function parseConfigCSV(text) {
       });
       const desiderateIdx = headerMap.get(normalizeCsvHeader(CONFIG_CSV_DESIDERATE_HEADER));
       const desiderate = parseDesiderate(getCell(row, desiderateIdx));
+      const saldoIdx = headerMap.get(normalizeCsvHeader(CONFIG_CSV_SALDO_HEADER));
+      const hourBalance = parseFloat(String(getCell(row, saldoIdx)).replace(',', '.')) || 0;
       if (Object.keys(desiderate).length > 0 && !tags.includes('desiderate')) tags.push('desiderate');
       const rawOrder = parseInt(getCell(row, orderIdx), 10);
       nurseRows.push({
         order: Number.isInteger(rawOrder) ? rawOrder : fallbackIndex + 1,
-        nurse: normalizeNurse({ name, tags, absencePeriods, previousMonthTail, desiderate }, fallbackIndex),
+        nurse: normalizeNurse(
+          { name, tags, absencePeriods, previousMonthTail, desiderate, hourBalance },
+          fallbackIndex
+        ),
       });
       hasData = true;
     }
@@ -1839,6 +1850,17 @@ function importPrevMonthData(scheduleData) {
 
   state.previousMonthSchedule = schedule;
   state.previousMonthHours = hours;
+  // A fresh import RESETS the cumulative balance to that month's delta.
+  {
+    const period = {
+      month: state.month === 0 ? 11 : state.month - 1,
+      year: state.month === 0 ? state.year - 1 : state.year,
+    };
+    const prevTarget = getMonthlyTargetHours(period.year, period.month);
+    activeNurses.forEach((nurse, n) => {
+      nurse.hourBalance = hours[n] === null ? 0 : Math.round((hours[n] - prevTarget) * 10) / 10;
+    });
+  }
   // Remember which month the imported roster belongs to (the month before the
   // one being planned at import time) so the carryover baseline stays correct
   // even if the user later changes the planning month.
@@ -1882,7 +1904,10 @@ function prepareNextMonth() {
   });
   state.previousMonthPeriod = { month: state.month, year: state.year };
 
-  // Fill the manual continuity tails (-3/-2/-1) from the last days of the grid.
+  // Fill the manual continuity tails (-3/-2/-1) from the last days of the grid
+  // and update the CUMULATIVE hour balance (saldo): ore fatte − monte ore del
+  // mese, sommato mese dopo mese così debito/credito restano visibili.
+  const monthTarget = getMonthlyTargetHours(state.year, state.month);
   const nextMonthFirstDay = desiderataDateKey(nextYear, nextMonth, 1);
   state.nurses.forEach((nurse, n) => {
     if (n < numRows) {
@@ -1891,6 +1916,8 @@ function prepareNextMonth() {
         tail[t] = normalizeShiftCode(state.schedule[n][numDays - PREVIOUS_MONTH_TAIL_LENGTH + t]);
       }
       nurse.previousMonthTail = tail;
+      nurse.hourBalance =
+        Math.round(((nurse.hourBalance || 0) + (state.previousMonthHours[n] || 0) - monthTarget) * 10) / 10;
     }
     // Prune desiderate that are now in the past (before the new planning month).
     if (nurse.desiderate) {
@@ -1917,6 +1944,9 @@ function clearPrevMonth() {
   state.previousMonthSchedule = null;
   state.previousMonthHours = null;
   state.previousMonthPeriod = null;
+  state.nurses.forEach(nurse => {
+    nurse.hourBalance = 0;
+  });
   saveState();
   renderPrevMonthStatus();
 }
@@ -1984,8 +2014,18 @@ const HOUR_CARRYOVER_CAP = 24;
  * compatible with the monthly hour band.
  */
 function computePrevMonthDeltas() {
-  if (!state.previousMonthSchedule || !state.previousMonthHours) return null;
   const activeNurses = state.nurses.slice(0, state.totalNurses - state.absentNurses);
+  // Cumulative balance (saldo ore) takes precedence when present: it already
+  // sums every past month, so the one-month import math below would double-count.
+  if (activeNurses.some(nurse => (nurse.hourBalance || 0) !== 0)) {
+    const deltas = {};
+    activeNurses.forEach(nurse => {
+      const raw = Math.round((nurse.hourBalance || 0) * 10) / 10;
+      deltas[nurse.name] = Math.max(-HOUR_CARRYOVER_CAP, Math.min(HOUR_CARRYOVER_CAP, raw));
+    });
+    return deltas;
+  }
+  if (!state.previousMonthSchedule || !state.previousMonthHours) return null;
   const knownHours = state.previousMonthHours.filter(h => h !== undefined && h !== null);
   if (knownHours.length === 0) return null;
   // Baseline month: the one recorded at import time (previousMonthPeriod);
@@ -3096,7 +3136,7 @@ function renderStep4() {
                      <div class="font-bold">${d + 1}</div>
                    </th>`;
   }
-  headerHTML += `<th class="stats-col" title="Ore lavorate (scostamento dal monte ore personale, riporto incluso) | Diurni | Notti | Weekend">Ore (Δ) | D | N | WE</th></tr>`;
+  headerHTML += `<th class="stats-col" title="Ore lavorate (scostamento dal monte ore personale, riporto incluso) | Saldo ore cumulativo tra i mesi (debito/credito totale) | Diurni | Notti | Weekend">Ore (Δ) | Saldo | D | N | WE</th></tr>`;
 
   // Nurse rows
   const monthTargetUI = getMonthlyTargetHours(state.year, state.month);
@@ -3136,7 +3176,19 @@ function renderStep4() {
           ? 'text-blue-600 dark:text-blue-400'
           : 'text-gray-400';
     const deltaLabel = `${hourDelta > 0 ? '+' : ''}${hourDelta}`;
-    bodyHTML += `<td class="stats-col text-xs" title="Monte ore personale: ${personalTarget}h${hourDeltasUI && hourDeltasUI[n] ? ' (riporto incluso)' : ''}">${st.totalHours}h <span class="${deltaCls}">(${deltaLabel})</span> | ${st.diurni || 0}D | ${st.nights}N | ${st.weekends}WE</td>`;
+    // Cumulative saldo PROJECTED to end of this month: past balance + this
+    // month's hours vs the contract monte ore. What "Prepara mese successivo"
+    // will store — so the accumulation over the months is visible in advance.
+    const pastBalance = activeNurses[n]?.hourBalance || 0;
+    const saldo = Math.round((pastBalance + (st.totalHours || 0) - monthTargetUI) * 10) / 10;
+    const saldoCls =
+      saldo < -0.5
+        ? 'text-red-600 dark:text-red-400'
+        : saldo > 0.5
+          ? 'text-blue-600 dark:text-blue-400'
+          : 'text-gray-400';
+    const saldoLabel = `${saldo > 0 ? '+' : ''}${saldo}`;
+    bodyHTML += `<td class="stats-col text-xs" title="Monte ore personale: ${personalTarget}h${hourDeltasUI && hourDeltasUI[n] ? ' (riporto incluso)' : ''} — Saldo cumulativo a fine mese: ${saldoLabel}h${pastBalance ? ` (di cui ${pastBalance > 0 ? '+' : ''}${pastBalance}h dai mesi precedenti)` : ''}">${st.totalHours}h <span class="${deltaCls}">(${deltaLabel})</span> | <span class="${saldoCls}" title="Saldo ore cumulativo">${saldoLabel}</span> | ${st.diurni || 0}D | ${st.nights}N | ${st.weekends}WE</td>`;
     bodyHTML += `</tr>`;
   }
 
@@ -3172,10 +3224,11 @@ function renderStep4() {
       let title = '';
       let cls = 'cov-ok';
       let clickable = false;
-      const skipDayOne = (state.rules.maxCoverageD ?? 0) > 0 && d === 0 && !buildPrevMonthTail();
-      if (!skipDayOne) {
-        let nightToday = false;
-        for (let n = 0; n < numNurses; n++) if (state.schedule[n][d] === 'N') nightToday = true;
+      {
+        // Ward rule: the night on-call is needed EVERY day, not only on days
+        // where the grid happens to show an N.
+        let nightToday = (state.rules.minCoverageN ?? 0) > 0;
+        for (let n = 0; n < numNurses && !nightToday; n++) if (state.schedule[n][d] === 'N') nightToday = true;
         if (nightToday) {
           const elig = eligibleReperibili(d);
           const chosen = reperibileForDay(d);
@@ -3480,9 +3533,33 @@ function recalcNurseStats(n) {
 // today; without diurni it is a nurse who works the MORNING today.
 // ---------------------------------------------------------------------------
 
+// Ward rule: "solo mattine feriali" and "mattine e pomeriggi" never serve as
+// on-call, day or night.
+function isReperibileExcludedUI(n) {
+  const tags = state.nurses[n]?.tags || [];
+  return tags.includes('solo_mattine') || tags.includes('mattine_e_pomeriggi');
+}
+
+function anySmontoOnDay(d) {
+  if (!state.schedule) return false;
+  for (let n = 0; n < state.schedule.length; n++) {
+    if (state.schedule[n] && state.schedule[n][d] === 'S') return true;
+  }
+  return false;
+}
+
 function isReperibileEligibleUI(n, d) {
   if (!state.schedule || !state.schedule[n]) return false;
-  if ((state.rules.maxCoverageD ?? 0) > 0) return state.schedule[n][d] === 'S';
+  if (isReperibileExcludedUI(n)) return false;
+  if ((state.rules.maxCoverageD ?? 0) > 0) {
+    if (state.schedule[n][d] === 'S') return true;
+    // Day-1 fallback: without previous-month continuity nobody can be on
+    // smonto — a morning/diurno worker covers the on-call instead.
+    if (d === 0 && !anySmontoOnDay(0)) {
+      return state.schedule[n][d] === 'M' || state.schedule[n][d] === 'D';
+    }
+    return false;
+  }
   return state.schedule[n][d] === 'M';
 }
 
@@ -3495,13 +3572,38 @@ function eligibleReperibili(d) {
   return out;
 }
 
-// The designated on-call for day d: the manual override when still valid,
-// otherwise the first eligible nurse; -1 when nobody qualifies.
+/**
+ * Fair month-long on-call rota: day by day, pick the eligible nurse with the
+ * FEWEST on-call days so far (manual overrides always win and count too).
+ * Deterministic, so the row is stable between renders — and the same names no
+ * longer monopolize the duty just because they come first in the roster.
+ */
+function buildReperibiliRota(eligibleFn, overrides) {
+  if (!state.schedule) return [];
+  const numDays = daysInMonth(state.year, state.month);
+  const counts = new Array(state.schedule.length).fill(0);
+  const rota = new Array(numDays).fill(-1);
+  for (let d = 0; d < numDays; d++) {
+    const elig = eligibleFn(d);
+    if (!elig.length) continue;
+    const override = overrides ? overrides[d] : undefined;
+    let chosen;
+    if (override !== undefined && elig.includes(override)) {
+      chosen = override;
+    } else {
+      chosen = elig[0];
+      for (const n of elig) if (counts[n] < counts[chosen]) chosen = n;
+    }
+    rota[d] = chosen;
+    counts[chosen]++;
+  }
+  return rota;
+}
+
+// The designated night on-call for day d (fair rota + manual overrides).
 function reperibileForDay(d) {
-  const elig = eligibleReperibili(d);
-  const override = state.reperibili ? state.reperibili[d] : undefined;
-  if (override !== undefined && elig.includes(override)) return override;
-  return elig.length ? elig[0] : -1;
+  const rota = buildReperibiliRota(eligibleReperibili, state.reperibili);
+  return rota[d] ?? -1;
 }
 
 function cycleReperibile(d) {
@@ -3524,16 +3626,15 @@ function eligibleReperibiliDiurni(d) {
   const out = [];
   if (!state.schedule) return out;
   for (let n = 0; n < state.schedule.length; n++) {
-    if (state.schedule[n] && state.schedule[n][d] === 'N') out.push(n);
+    if (state.schedule[n] && state.schedule[n][d] === 'N' && !isReperibileExcludedUI(n)) out.push(n);
   }
   return out;
 }
 
+// The designated festivo day on-call for day d (fair rota + manual overrides).
 function reperibileDiurnoForDay(d) {
-  const elig = eligibleReperibiliDiurni(d);
-  const override = state.reperibiliDiurni ? state.reperibiliDiurni[d] : undefined;
-  if (override !== undefined && elig.includes(override)) return override;
-  return elig.length ? elig[0] : -1;
+  const rota = buildReperibiliRota(eligibleReperibiliDiurni, state.reperibiliDiurni);
+  return rota[d] ?? -1;
 }
 
 function cycleReperibileDiurno(d) {
@@ -3663,10 +3764,8 @@ function revalidate() {
   if (state.rules.reperibileNotturno) {
     const conDiurni = (state.rules.maxCoverageD ?? 0) > 0;
     for (let d = 0; d < numDays; d++) {
-      // Giorno 1 in modalità smonto: senza dati di continuità nessuno può avere S
-      if (conDiurni && d === 0 && !buildPrevMonthTail()) continue;
-      let nightToday = false;
-      for (let n = 0; n < numNurses; n++) if (state.schedule[n][d] === 'N') nightToday = true;
+      let nightToday = (state.rules.minCoverageN ?? 0) > 0;
+      for (let n = 0; n < numNurses && !nightToday; n++) if (state.schedule[n][d] === 'N') nightToday = true;
       if (nightToday && reperibileForDay(d) === -1)
         violations.push({
           day: d,

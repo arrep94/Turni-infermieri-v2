@@ -489,12 +489,37 @@ function hasNightOnDay(schedule, d, numNurses) {
   return false;
 }
 
+// Profiles excluded from EVERY on-call duty (ward rule): "solo mattine
+// feriali" and the rigid M/P matrix ("mattine e pomeriggi") never serve as
+// reperibile, day or night.
+function isReperibileExcluded(props) {
+  return !!(props && (props.soloMattine || props.mattineEPomeriggi));
+}
+
+// True when at least one nurse is on smonto on day d.
+function hasSmontoOnDay(schedule, ctx, d) {
+  for (let n = 0; n < ctx.numNurses; n++) {
+    if (schedule[n][d] === 'S') return true;
+  }
+  return false;
+}
+
 // True when the nurse can serve as night on-call on day d.
 // With diurni in use (maxCovD > 0) the on-call is the nurse on SMONTO today
 // (just off last night's shift); without diurni it is a nurse who worked the
 // MORNING today ("dopo la mattina" — no other requirement).
+// Day-1 fallback (smonto regime): without previous-month continuity nobody can
+// be on smonto on day 1 — a morning/diurno worker covers the on-call instead
+// of leaving the day uncovered.
 function isReperibileEligible(schedule, ctx, n, d) {
-  if (ctx.maxCovD > 0) return schedule[n][d] === 'S';
+  if (isReperibileExcluded(ctx.nurseProps && ctx.nurseProps[n])) return false;
+  if (ctx.maxCovD > 0) {
+    if (schedule[n][d] === 'S') return true;
+    if (d === 0 && !hasSmontoOnDay(schedule, ctx, d)) {
+      return schedule[n][d] === 'M' || schedule[n][d] === 'D';
+    }
+    return false;
+  }
   return schedule[n][d] === 'M';
 }
 
@@ -882,9 +907,11 @@ function computeScore(schedule, ctx) {
   // who worked the morning today (regime without diurni).
   if (ctx.reperibileNotturno) {
     for (let d = 0; d < numDays; d++) {
-      // In smonto mode nobody can be on S on day 1 without previous-month data.
-      if (ctx.maxCovD > 0 && d === 0 && !ctx.prevTail) continue;
-      if (!hasNightOnDay(schedule, d, numNurses)) continue;
+      // Day 1 without continuity uses the morning/diurno fallback (see
+      // isReperibileEligible). The on-call is required EVERY day of the month
+      // (ward rule) as long as nights are part of the ward's coverage — not
+      // only on days where the planner happened to place a night.
+      if (!hasNightOnDay(schedule, d, numNurses) && ctx.minCovN <= 0) continue;
       if (findReperibile(schedule, d, numNurses, ctx) === -1) hard++;
     }
   }
@@ -1235,9 +1262,11 @@ function collectViolations(schedule, ctx) {
   // today with diurni in use, morning today otherwise).
   if (ctx.reperibileNotturno) {
     for (let d = 0; d < numDays; d++) {
-      // In smonto mode nobody can be on S on day 1 without previous-month data.
-      if (ctx.maxCovD > 0 && d === 0 && !ctx.prevTail) continue;
-      if (!hasNightOnDay(schedule, d, numNurses)) continue;
+      // Day 1 without continuity uses the morning/diurno fallback (see
+      // isReperibileEligible). The on-call is required EVERY day of the month
+      // (ward rule) as long as nights are part of the ward's coverage — not
+      // only on days where the planner happened to place a night.
+      if (!hasNightOnDay(schedule, d, numNurses) && ctx.minCovN <= 0) continue;
       if (findReperibile(schedule, d, numNurses, ctx) === -1) {
         violations.push({
           type: 'reperibile_mancante',

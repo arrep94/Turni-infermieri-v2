@@ -218,6 +218,7 @@ describe('config CSV helpers', () => {
           id: 'n1',
           name: 'Rossi, Maria',
           tags: ['solo_mattine', 'ferie'],
+          hourBalance: -8.2,
           absencePeriods: {
             ferie: { start: '2027-05-01', end: '2027-05-03' },
           },
@@ -256,6 +257,7 @@ describe('config CSV helpers', () => {
     assert.equal(result.config.absentNurses, 1);
     assert.equal(result.config.rules.minCoverageM, 5);
     assert.equal(result.config.rules.consenteDoppioDMensile, false);
+    assert.equal(result.config.nurses[0].hourBalance, -8.2);
     assert.deepEqual(toPlain(result.config.rules.coppiaTurni), [0, 1]);
     assert.equal(result.config.rules.fasciaOraria, '7-10');
     assert.equal(result.config.nurses[0].name, 'Rossi, Maria');

@@ -2615,6 +2615,41 @@ describe('weeklyRestNeed: esenzioni riposi settimanali', () => {
   });
 });
 
+describe('reperibilita: esclusioni e fallback giorno 1', () => {
+  it('solo_mattine e mattine_e_pomeriggi non sono mai reperibili', () => {
+    const config = makeMinimalConfig({
+      numNurses: 3,
+      nurseOverrides: { 0: { tags: ['solo_mattine'] }, 1: { tags: ['mattine_e_pomeriggi'] } },
+      rules: { maxCoverageD: 0, minCoverageN: 1, maxCoverageN: 2, reperibileNotturno: true },
+    });
+    const bctx = ctx.buildContext(config);
+    const schedule = Array.from({ length: 3 }, () => new Array(bctx.numDays).fill('R'));
+    schedule[0][5] = 'M';
+    schedule[1][5] = 'M';
+    schedule[2][5] = 'M';
+    assert.equal(ctx.isReperibileEligible(schedule, bctx, 0, 5), false, 'solo_mattine escluso');
+    assert.equal(ctx.isReperibileEligible(schedule, bctx, 1, 5), false, 'mattine_e_pomeriggi escluso');
+    assert.equal(ctx.isReperibileEligible(schedule, bctx, 2, 5), true, 'profilo libero idoneo');
+  });
+
+  it('giorno 1 senza smonto: reperibile coperto da chi fa mattina o diurno', () => {
+    const config = makeMinimalConfig({
+      numNurses: 2,
+      rules: { maxCoverageD: 2, minCoverageN: 1, maxCoverageN: 2, reperibileNotturno: true },
+    });
+    const bctx = ctx.buildContext(config);
+    const schedule = Array.from({ length: 2 }, () => new Array(bctx.numDays).fill('R'));
+    schedule[0][0] = 'D';
+    schedule[1][0] = 'M';
+    // Nobody on smonto on day 1 → morning/diurno fallback applies
+    assert.equal(ctx.isReperibileEligible(schedule, bctx, 0, 0), true, 'diurno idoneo come fallback');
+    assert.equal(ctx.isReperibileEligible(schedule, bctx, 1, 0), true, 'mattina idonea come fallback');
+    // On a later day the fallback does NOT apply (smonto regime)
+    schedule[0][5] = 'D';
+    assert.equal(ctx.isReperibileEligible(schedule, bctx, 0, 5), false, 'dal giorno 2 serve lo smonto');
+  });
+});
+
 describe('collectViolations strict night patterns', () => {
   it('should report invalid M/P lead-in before night for no_diurni nurses', () => {
     const config = makeMinimalConfig({
