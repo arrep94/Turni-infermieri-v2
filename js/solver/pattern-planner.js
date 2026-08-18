@@ -729,12 +729,11 @@ function patternRowHardCost(row, ctx, n) {
     // the month edges) is fixable by local search and only costs soft points.
     // Partial boundary weeks are exempt for rigid-matrix M/P nurses (their 5+2
     // cycle guarantees the rests on every full week).
-    const mpMatrix = isMPCycleLimitedNurse(props);
     let deficitWeeks = 0;
     let deficitUnits = 0;
     for (const wDays of ctx.weekDaysList) {
-      if (mpMatrix && wDays.length < 7) continue;
-      const need = requiredRest(wDays.length, ctx.minRPerWeek);
+      // Matrix-, absence- and doppio-D-aware requirement (see weeklyRestNeed)
+      const need = weeklyRestNeed(tmpSchedule, ctx, n, wDays);
       let have = 0;
       for (const d of wDays) if (row[d] === 'R') have++;
       if (have < need) {
@@ -788,6 +787,9 @@ function patternRowSoftCost(row, ctx, n) {
     let deficitUnits = 0;
     for (const wDays of ctx.weekDaysList) {
       if (mpMatrix && wDays.length < 7) continue;
+      // Deficit uses the matrix/absence/doppio-D-aware requirement; excess
+      // keeps the raw one (absence weeks must not flag their pinned rests).
+      const needMin = weeklyRestNeed(tmpSchedule, ctx, n, wDays);
       const need = requiredRest(wDays.length, ctx.minRPerWeek);
       let have = 0;
       let discretionary = 0;
@@ -796,9 +798,9 @@ function patternRowSoftCost(row, ctx, n) {
         have++;
         if (!exemptBlockRests || !isNightBlockRestDay(tmpSchedule, ctx, n, d)) discretionary++;
       }
-      if (have < need) {
+      if (have < needMin) {
         deficitWeeks++;
-        deficitUnits += need - have;
+        deficitUnits += needMin - have;
       }
       // Mandatory night-block rests of the rigid D/N matrix never count as excess.
       if (discretionary > need) cost += (discretionary - need) * 20;

@@ -2577,6 +2577,44 @@ describe('doppio D mensile (recupero ore matrice D-N-S-R-R)', () => {
   });
 });
 
+describe('weeklyRestNeed: esenzioni riposi settimanali', () => {
+  it('una settimana interamente in maternità non è un deficit di riposi', () => {
+    const config = makeMinimalConfig({
+      numNurses: 1,
+      year: 2026,
+      month: 8,
+      nurseOverrides: { 0: { tags: ['maternita'] } },
+      rules: { minRPerWeek: 2, minCoverageM: 0, minCoverageP: 0, minCoverageN: 0, maxCoverageN: 2 },
+    });
+    const bctx = ctx.buildContext(config);
+    const schedule = [new Array(bctx.numDays).fill('MT')];
+    const violations = ctx.collectViolations(schedule, bctx);
+    assert.equal(
+      violations.filter(v => v.type === 'min_R_week').length,
+      0,
+      'assenza per tutto il mese: nessun falso allarme sui riposi'
+    );
+  });
+
+  it('le settimane parziali di confine sono esenti per la matrice D-N-S-R-R', () => {
+    const config = makeMinimalConfig({
+      numNurses: 1,
+      year: 2026,
+      month: 8, // Sept 2026 starts on Tuesday → partial first week
+      nurseOverrides: { 0: { tags: ['diurni_e_notturni'] } },
+      rules: { minRPerWeek: 2, minCoverageM: 0, minCoverageP: 0, minCoverageN: 0, maxCoverageN: 2 },
+    });
+    const bctx = ctx.buildContext(config);
+    const cycle = ['D', 'N', 'S', 'R', 'R'];
+    const schedule = [Array.from({ length: bctx.numDays }, (_, d) => cycle[d % 5])];
+    const violations = ctx.collectViolations(schedule, bctx);
+    const partialWeekViolations = violations.filter(
+      v => v.type === 'min_R_week' && bctx.weekDaysList[v.week].length < 7
+    );
+    assert.equal(partialWeekViolations.length, 0, 'settimane monche del calendario: nessun falso allarme');
+  });
+});
+
 describe('collectViolations strict night patterns', () => {
   it('should report invalid M/P lead-in before night for no_diurni nurses', () => {
     const config = makeMinimalConfig({

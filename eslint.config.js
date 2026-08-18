@@ -62,6 +62,7 @@ const solverSharedGlobals = {
   isDoppioDPair: 'writable',
   isDoppioDExtraDay: 'writable',
   countDoppioD: 'writable',
+  weeklyRestNeed: 'writable',
   // construct.js
   construct: 'writable',
   trySwapMP: 'writable',

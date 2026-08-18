@@ -1060,8 +1060,9 @@ function repairWeeklyRestDeficits(schedule, ctx) {
       // exempt from the weekly minimum by design (see computeScore).
       if (isMPCycleLimitedNurse(nurseProps[n])) continue;
       for (const weekDays of weekDaysList) {
-        const need = requiredRest(weekDays.length, minRPerWeek);
-        if (countWeekRest(repaired, n, weekDays) >= need) continue;
+        // Matrix/absence/doppio-D-aware: don't chase exempt "deficits"
+        const need = weeklyRestNeed(repaired, ctx, n, weekDays);
+        if (need <= 0 || countWeekRest(repaired, n, weekDays) >= need) continue;
 
         let best = null;
         for (const d of weekDays) {

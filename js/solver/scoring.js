@@ -71,6 +71,35 @@ function countDoppioD(schedule, n, numDays) {
   return count;
 }
 
+const WEEKLY_REST_ABSENCE_SHIFTS = new Set(['F', 'MA', 'L104', 'PR', 'MT']);
+
+/**
+ * Weekly minimum-rest requirement for one nurse in one calendar week, aware of:
+ * (a) rigid/pinned weekly structures (M/P 5+2, D-N-S-R-R, solo_mattine,
+ *     4 mattine + notte ven.): their rests are matrix-determined, so partial
+ *     boundary weeks are calendar artifacts, not violations;
+ * (b) absence days (ferie/malattia/104/permessi/maternità), which already
+ *     satisfy the recovery requirement — a fully absent week needs no extra R;
+ * (c) the monthly doppio D, which gives up exactly one sanctioned rest.
+ * Used by scoring, violations, the pattern planner and the weekly-rest repair
+ * so they all agree on what counts as a real deficit.
+ */
+function weeklyRestNeed(schedule, ctx, n, wDays) {
+  const props = ctx.nurseProps[n];
+  if (
+    wDays.length < 7 &&
+    (isMPCycleLimitedNurse(props) || props.diurniENotturni || props.soloMattine || props.quattroMattineVenerdiNotte)
+  )
+    return 0;
+  let absent = 0;
+  for (const d of wDays) {
+    if (WEEKLY_REST_ABSENCE_SHIFTS.has(schedule[n][d])) absent++;
+  }
+  let need = requiredRest(wDays.length - absent, ctx.minRPerWeek);
+  if (ctx.consenteDoppioDMensile && wDays.some(d => isDoppioDExtraDay(schedule, ctx, n, d))) need--;
+  return Math.max(0, need);
+}
+
 // Read a shift from the current month schedule, or from previousMonthTail when
 // dayIdx is negative. Negative indices are translated from the tail end so
 // dayIdx === -1 means "last shift of previous month", dayIdx === -2 the one before, etc.
@@ -618,13 +647,9 @@ function computeScore(schedule, ctx) {
     // cycle guarantees 2 rests per full week, and a month starting or ending
     // mid-cycle is a calendar artifact, not a violation.
     if (minRPerWeek > 0) {
-      const mpMatrix = isMPCycleLimitedNurse(nurseProps[n]);
       for (const wDays of weekDaysList) {
-        if (mpMatrix && wDays.length < 7) continue;
-        let need = requiredRest(wDays.length, minRPerWeek);
-        // The week hosting the monthly doppio D gave up one rest by design:
-        // lower its requirement instead of flagging the sanctioned recovery D.
-        if (ctx.consenteDoppioDMensile && wDays.some(d => isDoppioDExtraDay(schedule, ctx, n, d))) need--;
+        // Matrix-, absence- and doppio-D-aware requirement (see weeklyRestNeed)
+        const need = weeklyRestNeed(schedule, ctx, n, wDays);
         const have = countWeekRest(schedule, n, wDays);
         if (have < need) hard += (need - have) * 2;
       }
@@ -1094,16 +1119,17 @@ function collectViolations(schedule, ctx) {
       const mpMatrix = isMPCycleLimitedNurse(nurseProps[n]);
       for (let w = 0; w < weekDaysList.length; w++) {
         const wDays = weekDaysList[w];
+        // Deficit: matrix-, absence- and doppio-D-aware requirement (mirror of
+        // computeScore, see weeklyRestNeed). Excess below keeps the raw need.
+        const needMin = weeklyRestNeed(schedule, ctx, n, wDays);
         const need = requiredRest(wDays.length, minRPerWeek);
         const have = countWeekRest(schedule, n, wDays);
-        // Partial boundary weeks are exempt for rigid-matrix M/P nurses
-        // (mirror of computeScore).
-        if (have < need && !(mpMatrix && wDays.length < 7))
+        if (have < needMin)
           violations.push({
             nurse: n,
             week: w,
             type: 'min_R_week',
-            msg: `Infermiere ${n + 1}, settimana ${w + 1}: solo ${have} riposi (minimo ${need})`,
+            msg: `Infermiere ${n + 1}, settimana ${w + 1}: solo ${have} riposi (minimo ${needMin})`,
           });
         // Mirror of computeScore: exclude mandatory night-block rests for
         // diurni_e_notturni, exempt partial boundary weeks for rigid-matrix
