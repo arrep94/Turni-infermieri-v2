@@ -10,19 +10,75 @@
 // ---------------------------------------------------------------------------
 
 // Active shift hours (mutable — updated by applyFasciaOraria)
-const SHIFT_HOURS = { M: 6.2, P: 6.2, D: 12.2, N: 12.2, S: 0, R: 0, F: 6.12, MA: 6.12, L104: 6.12, PR: 6.12, MT: 6.12 };
+const SHIFT_HOURS = {
+  M: 7.2,
+  P: 7.2,
+  D: 12.2,
+  N: 12.2,
+  S: 0,
+  R: 0,
+  F: 6.12,
+  MA: 6.12,
+  L104: 6.12,
+  PR: 6.12,
+  MT: 6.12,
+  CP: 6.12,
+  F0: 0,
+  MA0: 0,
+  MT0: 0,
+  CP0: 0,
+};
 
 // Fascia oraria presets
 const FASCIA_PRESETS = {
-  standard: { M: 6.2, P: 6.2, D: 12.2, N: 12.2, S: 0, R: 0, F: 6.12, MA: 6.12, L104: 6.12, PR: 6.12, MT: 6.12 },
-  '7-10': { M: 7.2, P: 7.2, D: 12.2, N: 10.2, S: 0, R: 0, F: 7.12, MA: 7.12, L104: 7.12, PR: 7.12, MT: 7.12 },
+  // M/P are worth 7h12' in BOTH fasce (ward rule: morning/afternoon workers
+  // count 7.12 per shift even in mixed wards); the fasce differ on the night
+  // (12h12' mixed vs 10h12' pure) and on the absence value (6.12 vs 7.12).
+  // F0/MA0/MT0/CP0: unpaid absence days (6th-7th of each absence week) —
+  // same sigla in the grid, zero hours credited.
+  standard: {
+    M: 7.2,
+    P: 7.2,
+    D: 12.2,
+    N: 12.2,
+    S: 0,
+    R: 0,
+    F: 6.12,
+    MA: 6.12,
+    L104: 6.12,
+    PR: 6.12,
+    MT: 6.12,
+    CP: 6.12,
+    F0: 0,
+    MA0: 0,
+    MT0: 0,
+    CP0: 0,
+  },
+  '7-10': {
+    M: 7.2,
+    P: 7.2,
+    D: 12.2,
+    N: 10.2,
+    S: 0,
+    R: 0,
+    F: 7.12,
+    MA: 7.12,
+    L104: 7.12,
+    PR: 7.12,
+    MT: 7.12,
+    CP: 7.12,
+    F0: 0,
+    MA0: 0,
+    MT0: 0,
+    CP0: 0,
+  },
 };
 const FASCIA_SHIFT_START = {
-  standard: { M: 8, P: 14, D: 8, N: 20 },
+  standard: { M: 7, P: 14, D: 8, N: 20 },
   '7-10': { M: 7, P: 14, D: 8, N: 21 },
 };
 const FASCIA_SHIFT_END = {
-  standard: { M: 14.2, P: 20.2, D: 20.2, N: 8.2 },
+  standard: { M: 14.2, P: 21.2, D: 20.2, N: 8.2 },
   '7-10': { M: 14.2, P: 21.2, D: 20.2, N: 7.2 },
 };
 
@@ -45,11 +101,12 @@ const ABSENCE_TAG_TO_SHIFT = {
   104: 'L104',
   permesso_retribuito: 'PR',
   maternita: 'MT',
+  congedo_parentale: 'CP',
 };
 
 // Active shift start/end times (mutable — updated by applyFasciaOraria)
-const SHIFT_END = { M: 14.2, P: 20.2, D: 20.2, N: 8.2 };
-const SHIFT_START = { M: 8, P: 14, D: 8, N: 20 };
+const SHIFT_END = { M: 14.2, P: 21.2, D: 20.2, N: 8.2 };
+const SHIFT_START = { M: 7, P: 14, D: 8, N: 20 };
 
 /**
  * Apply a fascia oraria preset, updating SHIFT_HOURS, SHIFT_START, SHIFT_END.

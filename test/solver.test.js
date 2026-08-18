@@ -330,15 +330,15 @@ describe('monthly contract hours', () => {
 // 5. gapHours
 // ---------------------------------------------------------------------------
 describe('gapHours', () => {
-  it('should compute N->M gap as SHIFT_START.M - SHIFT_END.N (same-day, -0.2)', () => {
-    // N ends at 8.2, M starts at 8 => 8 - 8.2 = -0.2
+  it('should compute N->M gap as SHIFT_START.M - SHIFT_END.N (same-day, -1.2)', () => {
+    // N ends at 8.2, M starts at 7 => 7 - 8.2 = -1.2
     const gap = ctx.gapHours('N', 'M');
-    assert.ok(Math.abs(gap - -0.2) < 0.001);
+    assert.ok(Math.abs(gap - -1.2) < 0.001);
   });
 
-  it('should compute P->M gap as (24 - 20.2) + 8 = 11.8', () => {
+  it('should compute P->M gap as (24 - 21.2) + 7 = 9.8', () => {
     const gap = ctx.gapHours('P', 'M');
-    assert.ok(Math.abs(gap - 11.8) < 0.001);
+    assert.ok(Math.abs(gap - 9.8) < 0.001);
   });
 
   it('should compute M->P gap as (24 - 14.2) + 14 = 23.8', () => {
@@ -354,9 +354,9 @@ describe('gapHours', () => {
     assert.equal(ctx.gapHours('M', 'S'), Infinity);
   });
 
-  it('should compute D->M gap as (24 - 20.2) + 8 = 11.8', () => {
+  it('should compute D->M gap as (24 - 20.2) + 7 = 10.8', () => {
     const gap = ctx.gapHours('D', 'M');
-    assert.ok(Math.abs(gap - 11.8) < 0.001);
+    assert.ok(Math.abs(gap - 10.8) < 0.001);
   });
 });
 
@@ -400,12 +400,12 @@ describe('SHIFT_HOURS', () => {
     SHIFT_HOURS = toPlain(ctx._getConst('SHIFT_HOURS'));
   });
 
-  it('should have M = 6.2', () => {
-    assert.equal(SHIFT_HOURS.M, 6.2);
+  it('should have M = 7.2 (M/P valgono 7h12 in ogni fascia)', () => {
+    assert.equal(SHIFT_HOURS.M, 7.2);
   });
 
-  it('should have P = 6.2', () => {
-    assert.equal(SHIFT_HOURS.P, 6.2);
+  it('should have P = 7.2', () => {
+    assert.equal(SHIFT_HOURS.P, 7.2);
   });
 
   it('should have D = 12.2', () => {
@@ -470,19 +470,19 @@ describe('applyFasciaOraria', () => {
     ctx.applyFasciaOraria('7-10');
     ctx.applyFasciaOraria('standard');
     const hrs = toPlain(ctx._getConst('SHIFT_HOURS'));
-    assert.equal(hrs.M, 6.2);
-    assert.equal(hrs.P, 6.2);
+    assert.equal(hrs.M, 7.2);
+    assert.equal(hrs.P, 7.2);
     assert.equal(hrs.N, 12.2);
     assert.equal(hrs.F, 6.12);
     const start = toPlain(ctx._getConst('SHIFT_START'));
-    assert.equal(start.M, 8);
+    assert.equal(start.M, 7);
     assert.equal(start.N, 20);
   });
 
   it('should default to standard for unknown fascia', () => {
     ctx.applyFasciaOraria('unknown');
     const hrs = toPlain(ctx._getConst('SHIFT_HOURS'));
-    assert.equal(hrs.M, 6.2);
+    assert.equal(hrs.M, 7.2);
     assert.equal(hrs.N, 12.2);
   });
 
@@ -645,10 +645,10 @@ describe('nurseHours', () => {
   });
 
   it('should sum hours for a known schedule row', () => {
-    // M=6.2, P=6.2, R=0 => total 12.4
+    // M=7.2, P=7.2, R=0 => total 14.4
     const schedule = [['M', 'P', 'R']];
     const hours = ctx.nurseHours(schedule, 0, 3);
-    assert.ok(Math.abs(hours - 12.4) < 0.001);
+    assert.ok(Math.abs(hours - 14.4) < 0.001);
   });
 
   it('should return 0 for an all-rest schedule', () => {
@@ -1103,13 +1103,11 @@ describe('construct', () => {
     });
     const bctx = ctx.buildContext(config);
     const schedule = ctx.construct(bctx);
-    // Jan 1-3 2025 (Wed-Fri) are ferie working days → F; Jan 4-5 (Sat-Sun)
-    // fall inside the vacation period but weekends count as plain rest → R.
-    for (let d = 0; d < 3; d++) {
+    // Jan 1-5 2025: the period starts on Wednesday, so ALL five days are paid
+    // absence days (first 5 of the rolling block) and keep the F sigla.
+    for (let d = 0; d < 5; d++) {
       assert.equal(schedule[0][d], 'F', `Nurse 0 day ${d} should be F (ferie), got ${schedule[0][d]}`);
     }
-    assert.equal(schedule[0][3], 'R', 'Saturday inside ferie should be R');
-    assert.equal(schedule[0][4], 'R', 'Sunday inside ferie should be R');
   });
 
   it('should spread extra night shifts according to the monthly target instead of saturating max coverage', () => {

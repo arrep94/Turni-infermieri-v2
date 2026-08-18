@@ -26,6 +26,11 @@ const SHIFT_COLORS = {
   L104: 'shift-L104',
   PR: 'shift-PR',
   MT: 'shift-MT',
+  CP: 'shift-CP',
+  F0: 'shift-F',
+  MA0: 'shift-MA',
+  MT0: 'shift-MT',
+  CP0: 'shift-CP',
 };
 const SHIFT_LABELS = {
   M: 'Mattina',
@@ -39,23 +44,81 @@ const SHIFT_LABELS = {
   L104: '104',
   PR: 'Perm.Retr.',
   MT: 'Maternità',
+  CP: 'Congedo par.',
+  F0: 'Ferie (senza ore)',
+  MA0: 'Malattia (senza ore)',
+  MT0: 'Maternità (senza ore)',
+  CP0: 'Congedo par. (senza ore)',
 };
 // Active shift hours (mutable — updated by applyFasciaOraria)
-const SHIFT_HOURS = { M: 6.2, P: 6.2, D: 12.2, N: 12.2, S: 0, R: 0, F: 6.12, MA: 6.12, L104: 6.12, PR: 6.12, MT: 6.12 };
+const SHIFT_HOURS = {
+  M: 7.2,
+  P: 7.2,
+  D: 12.2,
+  N: 12.2,
+  S: 0,
+  R: 0,
+  F: 6.12,
+  MA: 6.12,
+  L104: 6.12,
+  PR: 6.12,
+  MT: 6.12,
+  CP: 6.12,
+  F0: 0,
+  MA0: 0,
+  MT0: 0,
+  CP0: 0,
+};
 const FASCIA_PRESETS = {
-  standard: { M: 6.2, P: 6.2, D: 12.2, N: 12.2, S: 0, R: 0, F: 6.12, MA: 6.12, L104: 6.12, PR: 6.12, MT: 6.12 },
-  '7-10': { M: 7.2, P: 7.2, D: 12.2, N: 10.2, S: 0, R: 0, F: 7.12, MA: 7.12, L104: 7.12, PR: 7.12, MT: 7.12 },
+  // M/P valgono 7h12' in ENTRAMBE le fasce (regola reparto); le fasce
+  // differiscono su notte (12h12' misti vs 10h12' puri) e assenze (6.12 vs 7.12).
+  standard: {
+    M: 7.2,
+    P: 7.2,
+    D: 12.2,
+    N: 12.2,
+    S: 0,
+    R: 0,
+    F: 6.12,
+    MA: 6.12,
+    L104: 6.12,
+    PR: 6.12,
+    MT: 6.12,
+    CP: 6.12,
+    F0: 0,
+    MA0: 0,
+    MT0: 0,
+    CP0: 0,
+  },
+  '7-10': {
+    M: 7.2,
+    P: 7.2,
+    D: 12.2,
+    N: 10.2,
+    S: 0,
+    R: 0,
+    F: 7.12,
+    MA: 7.12,
+    L104: 7.12,
+    PR: 7.12,
+    MT: 7.12,
+    CP: 7.12,
+    F0: 0,
+    MA0: 0,
+    MT0: 0,
+    CP0: 0,
+  },
 };
 const MONTHLY_HOURS_PER_WEEKDAY = 7.12;
 // Shift start/end times per fascia (duplicated from js/solver/constants.js —
 // the Worker cannot share code with the main thread). Used for the dynamic
 // coverage-card headers in Step 2.
 const FASCIA_SHIFT_START = {
-  standard: { M: 8, P: 14, D: 8, N: 20 },
+  standard: { M: 7, P: 14, D: 8, N: 20 },
   '7-10': { M: 7, P: 14, D: 8, N: 21 },
 };
 const FASCIA_SHIFT_END = {
-  standard: { M: 14.2, P: 20.2, D: 20.2, N: 8.2 },
+  standard: { M: 14.2, P: 21.2, D: 20.2, N: 8.2 },
   '7-10': { M: 14.2, P: 21.2, D: 20.2, N: 7.2 },
 };
 
@@ -99,7 +162,7 @@ function fasciaSummaryLabel() {
   const fascia = resolveFasciaOraria(state.rules.fasciaOraria);
   return fascia === '7-10'
     ? `Estesa (M/P 7h12' · N 10h12' · assenze ${FASCIA_PRESETS['7-10'].F})`
-    : `Standard (M/P 6h12' · D/N 12h12' · assenze ${FASCIA_PRESETS.standard.F})`;
+    : `Standard (M/P 7h12' · D/N 12h12' · assenze ${FASCIA_PRESETS.standard.F})`;
 }
 
 // 'auto' picks the fascia from the diurni usage: schedules WITH diurni
@@ -136,6 +199,7 @@ const CONFIG_CSV_ABSENCE_FIELDS = [
   { key: '104', startHeader: '104 dal', endHeader: '104 al' },
   { key: 'permesso_retribuito', startHeader: 'Permesso retr. dal', endHeader: 'Permesso retr. al' },
   { key: 'maternita', startHeader: 'Maternità dal', endHeader: 'Maternità al' },
+  { key: 'congedo_parentale', startHeader: 'Congedo par. dal', endHeader: 'Congedo par. al' },
 ];
 const CONFIG_CSV_PREVIOUS_TAIL_FIELDS = [
   { key: 'dayMinus3', header: 'Mese prec. -3' },
@@ -168,9 +232,16 @@ function parseDesiderate(raw) {
     });
   return out;
 }
-const ALL_SHIFT_CODES = ['M', 'P', 'D', 'N', 'S', 'R', 'F', 'MA', 'L104', 'PR', 'MT'];
+const ALL_SHIFT_CODES = ['M', 'P', 'D', 'N', 'S', 'R', 'F', 'MA', 'L104', 'PR', 'MT', 'CP'];
+// Unpaid absence variants (6th-7th day of each absence week): same sigla in
+// the grid, 0 hours. Valid in imports, never offered in manual dropdowns.
+const UNPAID_ABSENCE_CODES = ['F0', 'MA0', 'MT0', 'CP0'];
+// Sigla shown in the grid for a raw code ('MA0' → 'MA')
+function displayShiftCode(code) {
+  return UNPAID_ABSENCE_CODES.includes(code) ? code.slice(0, -1) : code;
+}
 const CONTINUITY_SHIFT_OPTIONS = [''].concat(ALL_SHIFT_CODES);
-const VALID_SHIFTS = new Set(ALL_SHIFT_CODES);
+const VALID_SHIFTS = new Set(ALL_SHIFT_CODES.concat(UNPAID_ABSENCE_CODES));
 const PREVIOUS_MONTH_TAIL_LENGTH = CONFIG_CSV_PREVIOUS_TAIL_FIELDS.length;
 const IMPORTED_PREVIOUS_MONTH_TAIL_DAYS = 5;
 const TOTAL_WIZARD_STEPS = 5;
@@ -330,6 +401,7 @@ function createEmptyAbsencePeriods() {
     104: { start: null, end: null },
     permesso_retribuito: { start: null, end: null },
     maternita: { start: null, end: null },
+    congedo_parentale: { start: null, end: null },
   };
 }
 
@@ -770,6 +842,7 @@ function renderNurseList() {
     { key: '104', label: '104', shiftCode: 'L104' },
     { key: 'permesso_retribuito', label: 'Permesso retribuito', shiftCode: 'PR' },
     { key: 'maternita', label: 'Maternità', shiftCode: 'MT' },
+    { key: 'congedo_parentale', label: 'Congedo parentale', shiftCode: 'CP' },
   ];
 
   activeNurses.forEach((nurse, idx) => {
@@ -804,6 +877,7 @@ function renderNurseList() {
       { key: '104', label: '104', cls: 'tag-104', isAbsence: true },
       { key: 'permesso_retribuito', label: 'Permesso retribuito', cls: 'tag-permesso_retribuito', isAbsence: true },
       { key: 'maternita', label: 'Maternità', cls: 'tag-maternita', isAbsence: true },
+      { key: 'congedo_parentale', label: 'Congedo parentale', cls: 'tag-congedo_parentale', isAbsence: true },
     ];
 
     const tagsHTML = tagDefs
@@ -2536,7 +2610,7 @@ function renderFeasibilityCheck() {
 
 // Absence check mirroring the solver's getAbsenceShift: a tag with a date range
 // covers only that range; a tag without dates covers the whole month.
-const ABSENCE_TAGS_UI = ['ferie', 'malattia', '104', 'permesso_retribuito', 'maternita'];
+const ABSENCE_TAGS_UI = ['ferie', 'malattia', '104', 'permesso_retribuito', 'maternita', 'congedo_parentale'];
 
 function isNurseAbsentOnDay(nurse, year, month, day1Based) {
   if (!nurse || !Array.isArray(nurse.tags)) return false;
@@ -3286,7 +3360,7 @@ function renderStep4() {
           : '';
       bodyHTML += `<td class="${wk ? 'col-weekend' : ''} ${vio ? 'violation-cell' : ''}" data-n="${n}" data-d="${d}">
                      <span class="shift-cell ${SHIFT_COLORS[shift] || 'shift-empty'} ${lockedShift ? 'opacity-80' : ''} ${wish ? 'desiderata-mark' : ''}"
-                            data-n="${n}" data-d="${d}"${lockAttrs}>${shift}</span>
+                            data-n="${n}" data-d="${d}"${lockAttrs}>${displayShiftCode(shift)}</span>
                    </td>`;
     }
 
@@ -3441,6 +3515,7 @@ function renderStep4() {
     ${vioSummaryHTML}
     <div class="mt-4 text-xs text-gray-500 flex flex-wrap gap-4 no-print">
       ${Object.entries(SHIFT_LABELS)
+        .filter(([k]) => !UNPAID_ABSENCE_CODES.includes(k))
         .map(
           ([k, v]) =>
             `<span class="inline-flex items-center gap-1">
@@ -3508,7 +3583,7 @@ function openShiftDropdown(anchorEl, n, d) {
   dropdown.id = 'active-dropdown';
 
   // Include all shift types including absence shifts, plus an empty (manual) cell
-  ['', 'M', 'P', 'D', 'N', 'S', 'R', 'F', 'MA', 'L104', 'PR', 'MT'].forEach(shift => {
+  ['', 'M', 'P', 'D', 'N', 'S', 'R', 'F', 'MA', 'L104', 'PR', 'MT', 'CP'].forEach(shift => {
     const btn = document.createElement('button');
     btn.className = `shift-cell ${SHIFT_COLORS[shift] || 'shift-empty'}`;
     btn.style.width = '36px';

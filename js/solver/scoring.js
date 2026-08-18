@@ -71,7 +71,7 @@ function countDoppioD(schedule, n, numDays) {
   return count;
 }
 
-const WEEKLY_REST_ABSENCE_SHIFTS = new Set(['F', 'MA', 'L104', 'PR', 'MT']);
+const WEEKLY_REST_ABSENCE_SHIFTS = new Set(['F', 'MA', 'L104', 'PR', 'MT', 'CP', 'F0', 'MA0', 'MT0', 'CP0']);
 
 /**
  * Weekly minimum-rest requirement for one nurse in one calendar week, aware of:
@@ -858,7 +858,7 @@ function computeScore(schedule, ctx) {
   // hour value the solver cannot control (a full month of maternità may
   // "exceed" the cap on paper without any workload).
   {
-    const absShifts = ['F', 'MA', 'L104', 'PR', 'MT'];
+    const absShifts = ['F', 'MA', 'L104', 'PR', 'MT', 'CP', 'F0', 'MA0', 'MT0', 'CP0'];
     for (let n = 0; n < numNurses; n++) {
       const hasAbsence = schedule[n].some(s => absShifts.includes(s));
       const isFullyAbsent = hasAbsence && schedule[n].every(s => absShifts.includes(s) || s === 'R');
@@ -1219,7 +1219,7 @@ function collectViolations(schedule, ctx) {
   // Monthly hour band violations (weekly sliders scaled to the month) and
   // per-nurse absolute night cap (hardMaxNights).
   {
-    const absShiftsV = ['F', 'MA', 'L104', 'PR', 'MT'];
+    const absShiftsV = ['F', 'MA', 'L104', 'PR', 'MT', 'CP', 'F0', 'MA0', 'MT0', 'CP0'];
     for (let n = 0; n < numNurses; n++) {
       const h = nurseHours(schedule, n, numDays);
       const hasAbsence = schedule[n].some(s => absShiftsV.includes(s));

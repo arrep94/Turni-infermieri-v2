@@ -275,6 +275,8 @@ function getDesiderataShift(nurse, day1Based, year, month) {
   return wish === 'M' || wish === 'P' || wish === 'D' || wish === 'N' || wish === 'R' ? wish : null;
 }
 
+const WEEKEND_REST_ABSENCE_TAGS = new Set(['ferie', 'malattia', 'maternita', 'congedo_parentale']);
+
 function getAbsenceShift(nurse, day1Based, year, month) {
   if (!nurse.absencePeriods) return null;
   for (const [tagKey, shiftCode] of Object.entries(ABSENCE_TAG_TO_SHIFT)) {
@@ -283,12 +285,23 @@ function getAbsenceShift(nurse, day1Based, year, month) {
     if (period && period.start && period.end) {
       const ds = `${year}-${String(month + 1).padStart(2, '0')}-${String(day1Based).padStart(2, '0')}`;
       if (ds >= period.start && ds <= period.end) {
-        // Ferie consume 5 working days per week: Saturdays and Sundays inside a
-        // vacation period count as plain rest days, not as vacation.
-        if (tagKey === 'ferie' && isWeekend(year, month, day1Based)) return 'R';
+        // Ferie/malattia/maternita/congedo parentale credit 5 paid days out of
+        // every 7 of absence, counted from the period START (ward works on 5
+        // shifts + 2 rests a week): days 6-7 of each rolling block keep the
+        // absence CODE in the grid but assign 0 hours (the '0' variant). An
+        // absence starting on Saturday therefore pays the weekend and leaves
+        // the two unpaid days later in the block.
+        if (WEEKEND_REST_ABSENCE_TAGS.has(tagKey)) {
+          const [sy, sm, sd] = period.start.split('-').map(Number);
+          const dayIdx = Math.round((new Date(year, month, day1Based) - new Date(sy, sm - 1, sd)) / 86400000);
+          if (dayIdx % 7 >= 5) return shiftCode + '0';
+        }
         return shiftCode;
       }
     } else {
+      // No dates → absent indefinitely: anchor the two unpaid days on the
+      // calendar weekend (Saturday+Sunday).
+      if (WEEKEND_REST_ABSENCE_TAGS.has(tagKey) && isWeekend(year, month, day1Based)) return shiftCode + '0';
       return shiftCode;
     }
   }

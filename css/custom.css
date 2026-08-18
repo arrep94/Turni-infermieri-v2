@@ -132,6 +132,10 @@ body {
 .shift-MT {
   background-color: #f472b6;
   color: #fff;
+}
+.shift-CP {
+  background-color: #f472b6;
+  color: #fff;
 } /* Maternità - light pink */
 .shift-empty {
   background-color: #e5e7eb;
@@ -508,6 +512,11 @@ td.violation-cell {
   color: #9d174d;
   border-color: #f9a8d4;
 }
+.tag.tag-congedo_parentale {
+  background: #fce7f3;
+  color: #9d174d;
+  border-color: #f9a8d4;
+}
 
 .tag.active {
   box-shadow: 0 0 0 2px currentColor;
@@ -644,6 +653,11 @@ html.dark .tag.tag-permesso_retribuito {
   border-color: #f59e0b;
 }
 html.dark .tag.tag-maternita {
+  background: #831843;
+  color: #f9a8d4;
+  border-color: #ec4899;
+}
+html.dark .tag.tag-congedo_parentale {
   background: #831843;
   color: #f9a8d4;
   border-color: #ec4899;

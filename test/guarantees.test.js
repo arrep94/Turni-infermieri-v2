@@ -241,8 +241,9 @@ describe('nuove regole riposi e notti', () => {
 });
 
 describe('ferie con weekend a riposo', () => {
-  it('pinna F nei feriali e R nei weekend dentro il periodo ferie', () => {
-    // Aprile 2026: 4-5 aprile = sabato e domenica
+  it('assenze: 5 giorni pagati ogni 7 dal giorno di inizio, sigla sempre in griglia (F0 senza ore)', () => {
+    // Periodo 1-7 aprile 2026 (inizia mercoledì): i primi 5 giorni pagano (F),
+    // il 6° e 7° del blocco (lun 6 e mar 7) tengono la sigla ma valgono 0 ore.
     const config = makeConfig({
       nurseOverrides: {
         0: {
@@ -252,13 +253,49 @@ describe('ferie con weekend a riposo', () => {
       },
     });
     const bctx = ctx.buildContext(config);
-    assert.equal(bctx.pinned[0][0], 'F'); // mer 1
+    assert.equal(bctx.pinned[0][0], 'F'); // mer 1 (giorno 1 del blocco)
     assert.equal(bctx.pinned[0][1], 'F'); // gio 2
     assert.equal(bctx.pinned[0][2], 'F'); // ven 3
-    assert.equal(bctx.pinned[0][3], 'R'); // sab 4
-    assert.equal(bctx.pinned[0][4], 'R'); // dom 5
-    assert.equal(bctx.pinned[0][5], 'F'); // lun 6
-    assert.equal(bctx.pinned[0][6], 'F'); // mar 7
+    assert.equal(bctx.pinned[0][3], 'F'); // sab 4 (pagato: 4° giorno del blocco)
+    assert.equal(bctx.pinned[0][4], 'F'); // dom 5 (pagato: 5° giorno)
+    assert.equal(bctx.pinned[0][5], 'F0'); // lun 6 → sigla ma 0 ore
+    assert.equal(bctx.pinned[0][6], 'F0'); // mar 7 → sigla ma 0 ore
+    const schedule = [bctx.pinned[0].map(c => c || 'R')];
+    // Ore della settimana di ferie: 5 × 6.12 (fascia standard con diurni)
+    assert.ok(Math.abs(ctx.nurseHours(schedule, 0, 7) - 5 * 6.12) < 1e-9);
+  });
+
+  it('malattia che inizia di sabato: il weekend paga, i 2 giorni senza ore cadono dopo', () => {
+    // Sabato 7 - venerdì 13 novembre 2026: blocco dal sabato → sab/dom pagati,
+    // giovedì 12 e venerdì 13 (6° e 7° giorno) con sigla ma 0 ore.
+    const config = makeConfig({
+      year: 2026,
+      month: 10,
+      nurseOverrides: {
+        0: {
+          tags: ['malattia'],
+          absencePeriods: { malattia: { start: '2026-11-07', end: '2026-11-13' } },
+        },
+      },
+    });
+    const bctx = ctx.buildContext(config);
+    assert.equal(bctx.pinned[0][6], 'MA'); // sab 7 pagato
+    assert.equal(bctx.pinned[0][7], 'MA'); // dom 8 pagato
+    assert.equal(bctx.pinned[0][8], 'MA'); // lun 9
+    assert.equal(bctx.pinned[0][11], 'MA0'); // gio 12 → 0 ore
+    assert.equal(bctx.pinned[0][12], 'MA0'); // ven 13 → 0 ore
+  });
+
+  it('assenza senza date (tutto il mese): i giorni senza ore sono sabato e domenica', () => {
+    const config = makeConfig({
+      year: 2026,
+      month: 10,
+      nurseOverrides: { 0: { tags: ['maternita'], absencePeriods: {} } },
+    });
+    const bctx = ctx.buildContext(config);
+    assert.equal(bctx.pinned[0][0], 'MT0'); // dom 1 nov → 0 ore
+    assert.equal(bctx.pinned[0][1], 'MT'); // lun 2 pagato
+    assert.equal(bctx.pinned[0][6], 'MT0'); // sab 7 → 0 ore
   });
 });
 
@@ -271,19 +308,19 @@ describe('fascia oraria automatica', () => {
     assert.ok(Math.abs(ctx.nurseHours(schedule, 0, bctx.numDays) - (7.2 + 10.2)) < 1e-9);
   });
 
-  it('con diurni (maxCoverageD>0): M/P valgono 6.2 e la notte 12.2', () => {
+  it('con diurni (maxCoverageD>0): M/P valgono comunque 7.2 e la notte 12.2', () => {
     const bctx = ctx.buildContext(makeConfig({ rules: { maxCoverageD: 4, fasciaOraria: 'auto' } }));
     const schedule = emptySchedule(bctx);
     schedule[0][0] = 'M';
     schedule[0][2] = 'N';
-    assert.ok(Math.abs(ctx.nurseHours(schedule, 0, bctx.numDays) - (6.2 + 12.2)) < 1e-9);
+    assert.ok(Math.abs(ctx.nurseHours(schedule, 0, bctx.numDays) - (7.2 + 12.2)) < 1e-9);
   });
 
-  it('la scelta manuale della fascia vince su auto', () => {
+  it('la scelta manuale della fascia vince su auto (notte 12.2 anche senza diurni)', () => {
     const bctx = ctx.buildContext(makeConfig({ rules: { maxCoverageD: 0, fasciaOraria: 'standard' } }));
     const schedule = emptySchedule(bctx);
-    schedule[0][0] = 'M';
-    assert.ok(Math.abs(ctx.nurseHours(schedule, 0, bctx.numDays) - 6.2) < 1e-9);
+    schedule[0][0] = 'N';
+    assert.ok(Math.abs(ctx.nurseHours(schedule, 0, bctx.numDays) - 12.2) < 1e-9);
   });
 });
 
