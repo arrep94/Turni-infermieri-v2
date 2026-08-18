@@ -854,13 +854,23 @@ function computeScore(schedule, ctx) {
   // Hard: nurses outside the monthly hour band (weekly sliders scaled to the month).
   // A nurse is exempt from the minimum only when actually absent (has absence
   // shifts): an all-R row is an unassigned nurse, not an absent one.
+  // The MAXIMUM compares WORKED hours only: absence days carry a contractual
+  // hour value the solver cannot control (a full month of maternità may
+  // "exceed" the cap on paper without any workload).
   {
     const absShifts = ['F', 'MA', 'L104', 'PR', 'MT'];
     for (let n = 0; n < numNurses; n++) {
       const hasAbsence = schedule[n].some(s => absShifts.includes(s));
       const isFullyAbsent = hasAbsence && schedule[n].every(s => absShifts.includes(s) || s === 'R');
       if (ctx.minMonthlyHours > 0 && !isFullyAbsent && hours[n] < ctx.minMonthlyHours) hard++;
-      if (hours[n] > ctx.maxMonthlyHours) hard++;
+      let workedHours = hours[n];
+      if (hasAbsence) {
+        workedHours = 0;
+        for (let d = 0; d < numDays; d++) {
+          if (!absShifts.includes(schedule[n][d])) workedHours += SHIFT_HOURS[schedule[n][d]] || 0;
+        }
+      }
+      if (workedHours > ctx.maxMonthlyHours) hard++;
     }
   }
 
@@ -1222,12 +1232,21 @@ function collectViolations(schedule, ctx) {
           msg: `${ctx.nurses[n].name}: ore totali ${h.toFixed(1)} < minimo mensile ${ctx.minMonthlyHours}`,
         });
       }
-      if (h > ctx.maxMonthlyHours) {
+      // The maximum compares WORKED hours only (mirror of computeScore):
+      // absence days carry contractual hours outside the solver's control.
+      let workedHours = h;
+      if (hasAbsence) {
+        workedHours = 0;
+        for (let d = 0; d < numDays; d++) {
+          if (!absShiftsV.includes(schedule[n][d])) workedHours += SHIFT_HOURS[schedule[n][d]] || 0;
+        }
+      }
+      if (workedHours > ctx.maxMonthlyHours) {
         violations.push({
           type: 'high_hours',
           nurse: n,
           day: -1,
-          msg: `${ctx.nurses[n].name}: ore totali ${h.toFixed(1)} > massimo mensile ${ctx.maxMonthlyHours}`,
+          msg: `${ctx.nurses[n].name}: ore lavorate ${workedHours.toFixed(1)} > massimo mensile ${ctx.maxMonthlyHours}`,
         });
       }
       if (!nurseProps[n].quattroMattineVenerdiNotte) {
