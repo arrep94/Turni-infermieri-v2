@@ -277,7 +277,7 @@ const DEFAULT_RULES = {
   // New flags
   coppiaTurni: null, // Array of 2 nurse indices [n1, n2] to have same shifts, or null
   consentePomeriggioDiurno: false, // Allow P→D transition
-  consente2DiurniConsecutivi: false, // Allow D-D but require R after
+  consenteDoppioDMensile: true, // Max ONE extra D per month per D/N-matrix nurse, replacing the SECOND rest (hour recovery)
   reperibileNotturno: true, // Night on-call: smonto today (with diurni) / morning today (without)
   reperibileDiurnoFestivo: true, // Day on-call on Sundays/holidays: nurse working the night that day
   fasciaOraria: 'auto', // 'auto' (segue i diurni) | 'standard' (6+12) | '7-10' (7+10)
@@ -1297,8 +1297,8 @@ function renderStep2() {
     state.rules.reperibileDiurnoFestivo = v;
     saveState();
   });
-  bindToggle('tog-consente-2d', r.consente2DiurniConsecutivi, v => {
-    state.rules.consente2DiurniConsecutivi = v;
+  bindToggle('tog-doppio-d-mensile', r.consenteDoppioDMensile, v => {
+    state.rules.consenteDoppioDMensile = v;
     saveState();
   });
 
@@ -3004,8 +3004,8 @@ const VIOLATION_HINTS = {
   reperibile_mancante:
     'In un giorno con notti serve un reperibile notturno idoneo (mattina o smonto secondo il regime).',
   reperibile_diurno_mancante: 'Nei festivi serve un reperibile diurno: un infermiere che fa la notte quel giorno.',
-  DD_no_R: 'Dopo due diurni consecutivi è obbligatorio un riposo.',
-  DDD: 'Tre diurni consecutivi non sono consentiti.',
+  doppio_d_multiplo: 'È consentito al massimo UN doppio D di recupero ore al mese per infermiere.',
+  transition_doppio_d: 'D→D è permesso solo come doppio D mensile: al posto del secondo riposo, mai dopo lo smonto.',
 };
 
 // Turn a solver violation into a coordinator-friendly line: real nurse name
@@ -3555,10 +3555,21 @@ function revalidate() {
 
   const FORBIDDEN_NEXT = {
     P: state.rules.consentePomeriggioDiurno ? ['M'] : ['M', 'D'],
-    D: state.rules.consente2DiurniConsecutivi ? ['M', 'P'] : ['M', 'P', 'D'],
+    D: ['M', 'P', 'D'],
     N: ['M', 'P', 'D', 'R', 'N'],
     S: ['M', 'P', 'D', 'N', 'S'],
   };
+
+  const nursesRv = state.nurses.slice(0, numNurses);
+  // D→D is legal only as the monthly "doppio D": D/N-matrix nurse, extra D in
+  // place of the SECOND rest of a night block (N-S-R right before it).
+  const isValidDoppioD = (n, d) =>
+    !!state.rules.consenteDoppioDMensile &&
+    !!nursesRv[n]?.tags?.includes('diurni_e_notturni') &&
+    d >= 3 &&
+    state.schedule[n][d - 1] === 'R' &&
+    state.schedule[n][d - 2] === 'S' &&
+    state.schedule[n][d - 3] === 'N';
 
   for (let n = 0; n < numNurses; n++) {
     for (let d = 0; d < numDays - 1; d++) {
@@ -3566,34 +3577,30 @@ function revalidate() {
       const nxt = state.schedule[n][d + 1];
       const forbidden = FORBIDDEN_NEXT[cur] || [];
       if (forbidden.includes(nxt)) {
+        if (cur === 'D' && nxt === 'D' && isValidDoppioD(n, d)) continue;
         violations.push({
           nurse: n,
           day: d,
-          type: 'transition',
-          msg: `Inf. ${n + 1}, gg ${d + 1}-${d + 2}: ${cur}→${nxt} vietato`,
+          type: cur === 'D' && nxt === 'D' ? 'transition_doppio_d' : 'transition',
+          msg:
+            cur === 'D' && nxt === 'D'
+              ? `Inf. ${n + 1}, gg ${d + 1}-${d + 2}: D→D valido solo al posto del secondo riposo (doppio D mensile)`
+              : `Inf. ${n + 1}, gg ${d + 1}-${d + 2}: ${cur}→${nxt} vietato`,
         });
       }
     }
-    // D-D specific checks when consecutive D shifts are allowed
-    if (state.rules.consente2DiurniConsecutivi) {
-      for (let d = 1; d < numDays - 1; d++) {
-        if (state.schedule[n][d - 1] === 'D' && state.schedule[n][d] === 'D' && state.schedule[n][d + 1] !== 'R')
-          violations.push({
-            nurse: n,
-            day: d + 1,
-            type: 'DD_no_R',
-            msg: `Inf. ${n + 1}, gg ${d + 2}: dopo D-D serve R`,
-          });
+    // At most ONE doppio D per nurse per month
+    if (state.rules.consenteDoppioDMensile) {
+      let ddPairs = 0;
+      for (let d = 0; d < numDays - 1; d++) {
+        if (state.schedule[n][d] === 'D' && state.schedule[n][d + 1] === 'D') ddPairs++;
       }
-      for (let d = 2; d < numDays; d++) {
-        if (state.schedule[n][d - 2] === 'D' && state.schedule[n][d - 1] === 'D' && state.schedule[n][d] === 'D')
-          violations.push({
-            nurse: n,
-            day: d,
-            type: 'DDD',
-            msg: `Inf. ${n + 1}, gg ${d + 1}: 3 diurni consecutivi non consentiti`,
-          });
-      }
+      if (ddPairs > 1)
+        violations.push({
+          nurse: n,
+          type: 'doppio_d_multiplo',
+          msg: `Inf. ${n + 1}: ${ddPairs} doppi D nel mese (massimo 1 consentito)`,
+        });
     }
   }
 

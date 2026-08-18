@@ -49,7 +49,8 @@ function buildContext(config) {
     S: [...BASE_FORBIDDEN_NEXT.S],
   };
   if (rules.consentePomeriggioDiurno) forbidden.P = forbidden.P.filter(s => s !== 'D');
-  if (rules.consente2DiurniConsecutivi) forbidden.D = forbidden.D.filter(s => s !== 'D');
+  // D→D stays in the forbidden table: the ONLY allowed pair is the structural
+  // "doppio D mensile" checked directly in transitionOk (isDoppioDPair).
 
   // Per-nurse properties
   const nurseProps = nurses.map(n => ({
@@ -109,7 +110,11 @@ function buildContext(config) {
   const weeklyMaxHours = maxHoursRule > 0 && maxHoursRule <= 60 ? maxHoursRule : Infinity;
   const preferDiurni = rules.preferDiurni ?? false;
   const coppiaTurni = rules.coppiaTurni ?? null;
-  const consente2D = rules.consente2DiurniConsecutivi ?? false;
+  // "Doppio D mensile": at most ONE extra D per month per diurni_e_notturni
+  // nurse, replacing the SECOND rest of a D-N-S-R-R block (never the first,
+  // never right after the smonto) to recover the structural hour deficit of
+  // the rigid matrix. Enforced in transitionOk/scoring; placed by repairDoppioD.
+  const consenteDoppioDMensile = rules.consenteDoppioDMensile ?? false;
   // Night on-call: each day with nights needs an eligible on-call (smonto today
   // with diurni in use, morning today otherwise). Off unless explicitly enabled.
   const reperibileNotturno = rules.reperibileNotturno ?? false;
@@ -146,7 +151,7 @@ function buildContext(config) {
   }
 
   // Previous month tail: pin mandatory continuation days at month start
-  // Handles N→S→R→R continuation and D-D→R continuation (when consente2D)
+  // Handles the N→S→R(→R) continuation across the month boundary
   const prevTail = previousMonthTail || null;
   if (prevTail) {
     for (let n = 0; n < numNurses; n++) {
@@ -170,12 +175,6 @@ function buildContext(config) {
         if (rigidSecondR && numDays > 1 && !pinned[n][1]) pinned[n][1] = 'R';
       } else if (rigidSecondR && last === 'R' && secondLast === 'S' && thirdLast === 'N') {
         // N-S-R on last three days → the rigid block still owes the second R
-        if (!pinned[n][0]) pinned[n][0] = 'R';
-      }
-
-      // D-D continuation: when consente2D is enabled and prev month ends with D-D,
-      // day 0 must be R (D-D must always be followed by R)
-      if (consente2D && last === 'D' && secondLast === 'D') {
         if (!pinned[n][0]) pinned[n][0] = 'R';
       }
     }
@@ -251,7 +250,7 @@ function buildContext(config) {
     minRPerWeek,
     preferDiurni,
     coppiaTurni,
-    consente2D,
+    consenteDoppioDMensile,
     reperibileNotturno,
     reperibileDiurnoFestivo,
     festivi,

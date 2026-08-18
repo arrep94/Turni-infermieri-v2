@@ -18,15 +18,57 @@ function transitionOk(prev, next, ctx, schedule, nurseIdx, dayIdx) {
     }
     if (!prev) return true;
   }
+  // "Doppio D mensile" (recupero ore): the ONLY allowed D→D is the extra D
+  // that replaces the SECOND rest of a D-N-S-R-R block — the first D of the
+  // pair must be preceded by N-S-R (never after the smonto, never in place of
+  // the first rest). The once-per-month cap is enforced in scoring.
+  if (prev === 'D' && next === 'D') {
+    return isDoppioDPair(schedule, ctx, nurseIdx, dayIdx === undefined ? undefined : dayIdx - 1);
+  }
   const fb = ctx.forbidden[prev];
   if (fb && fb.includes(next)) return false;
   if (ctx.rules.minGap11h && SHIFT_END[prev] !== undefined && SHIFT_START[next] !== undefined) {
     if (gapHours(prev, next) < 11) return false;
   }
-  if (ctx.consente2D && prev === 'D' && next === 'D' && nurseIdx !== undefined && dayIdx >= 2) {
-    if (schedule[nurseIdx][dayIdx - 2] === 'D') return false;
-  }
   return true;
+}
+
+/**
+ * True when the D at (nurseIdx, extraDayIdx) is a VALID "extra D" of the
+ * monthly doppio D: rule enabled, diurni_e_notturni nurse, and the cell sits
+ * exactly where the second rest of a D-N-S-R-R block was (N, S, R right
+ * before it — previous-month tail included via getShiftAt).
+ */
+function isDoppioDPair(schedule, ctx, nurseIdx, extraDayIdx) {
+  if (!ctx.consenteDoppioDMensile || nurseIdx === undefined || extraDayIdx === undefined) return false;
+  const props = ctx.nurseProps && ctx.nurseProps[nurseIdx];
+  if (!props || !props.diurniENotturni) return false;
+  return (
+    getShiftAt(schedule, ctx, nurseIdx, extraDayIdx - 1) === 'R' &&
+    getShiftAt(schedule, ctx, nurseIdx, extraDayIdx - 2) === 'S' &&
+    getShiftAt(schedule, ctx, nurseIdx, extraDayIdx - 3) === 'N'
+  );
+}
+
+// True when (n, d) actually IS the extra D of a valid doppio D in the current
+// schedule (cells verified, not just the structural precondition).
+function isDoppioDExtraDay(schedule, ctx, n, d) {
+  return (
+    schedule[n][d] === 'D' &&
+    d + 1 < schedule[n].length &&
+    schedule[n][d + 1] === 'D' &&
+    isDoppioDPair(schedule, ctx, n, d)
+  );
+}
+
+// Count the D-D pairs of a nurse inside the month (the doppio D of the
+// monthly hour-recovery rule — capped at one per month in scoring).
+function countDoppioD(schedule, n, numDays) {
+  let count = 0;
+  for (let d = 0; d + 1 < numDays; d++) {
+    if (schedule[n][d] === 'D' && schedule[n][d + 1] === 'D') count++;
+  }
+  return count;
 }
 
 // Read a shift from the current month schedule, or from previousMonthTail when
@@ -483,7 +525,6 @@ function computeScore(schedule, ctx) {
     maxNights,
     hardMaxNights,
     minRPerWeek,
-    consente2D,
     forbidden,
     nurseProps,
     weekDaysList,
@@ -525,28 +566,24 @@ function computeScore(schedule, ctx) {
         if (lastShift) {
           const day0 = schedule[n][0];
           const fb0 = forbidden[lastShift];
-          if (fb0 && fb0.includes(day0)) hard++;
+          // D→D across the month boundary is legal only as a doppio D whose
+          // extra D was the last day of the previous month.
+          const boundaryDoppioD = lastShift === 'D' && day0 === 'D' && isDoppioDPair(schedule, ctx, n, -1);
+          if (fb0 && fb0.includes(day0) && !boundaryDoppioD) hard++;
           if (lastShift === 'N' && day0 !== 'S') hard++;
           if (lastShift === 'S' && day0 !== 'R') hard++;
-        }
-        // D-D boundary checks (when consente2D enabled)
-        if (consente2D) {
-          const day0 = schedule[n][0];
-          // Previous month ends D-D → day 0 must be R
-          if (lastShift === 'D' && secondLastShift === 'D' && day0 !== 'R') hard++;
-          // Previous month ends …D → D on day 0 means D-D, so day 1 must be R
-          if (lastShift === 'D' && day0 === 'D' && numDays > 1 && schedule[n][1] !== 'R') hard++;
-          // Previous month ends D-D → D on day 0 means 3 consecutive D (forbidden)
-          if (lastShift === 'D' && secondLastShift === 'D' && day0 === 'D') hard++;
         }
       }
     }
     for (let d = 0; d < numDays - 1; d++) {
       const cur = schedule[n][d],
         nxt = schedule[n][d + 1];
-      // Forbidden transitions
+      // Forbidden transitions. D→D is legal only as the monthly doppio D
+      // (extra D replacing the SECOND rest of a D-N-S-R-R block).
       const fb = forbidden[cur];
-      if (fb && fb.includes(nxt)) hard++;
+      if (fb && fb.includes(nxt)) {
+        if (!(cur === 'D' && nxt === 'D' && isDoppioDPair(schedule, ctx, n, d))) hard++;
+      }
       // N must be followed by S
       if (cur === 'N' && nxt !== 'S') hard++;
       // S must be followed by R
@@ -554,21 +591,26 @@ function computeScore(schedule, ctx) {
     }
     // Rigid D/N matrix: for diurni_e_notturni the night block is N-S-R-R, so
     // the second R (day N+3) is mandatory whenever it falls inside the month.
-    // For every other profile the second R stays optional.
+    // For every other profile the second R stays optional. Exception: the
+    // monthly doppio D may replace the second R (and only the second one) when
+    // it forms a D-D pair with the next block's lead-in D.
     if (needsSecondNightRest(nurseProps[n])) {
       for (let d = -3; d < numDays - 3; d++) {
         if (getShiftAt(schedule, ctx, n, d) !== 'N') continue;
-        if (d + 3 >= 0 && schedule[n][d + 3] !== 'R') hard++;
+        if (d + 3 >= 0 && schedule[n][d + 3] !== 'R') {
+          const isDoppioD =
+            schedule[n][d + 3] === 'D' &&
+            d + 4 < numDays &&
+            schedule[n][d + 4] === 'D' &&
+            isDoppioDPair(schedule, ctx, n, d + 3);
+          if (!isDoppioD) hard++;
+        }
       }
     }
-    // D-D must be followed by R; no 3 consecutive D
-    if (consente2D) {
-      for (let d = 1; d < numDays - 1; d++) {
-        if (schedule[n][d - 1] === 'D' && schedule[n][d] === 'D' && schedule[n][d + 1] !== 'R') hard++;
-      }
-      for (let d = 2; d < numDays; d++) {
-        if (schedule[n][d - 2] === 'D' && schedule[n][d - 1] === 'D' && schedule[n][d] === 'D') hard++;
-      }
+    // Doppio D cap: at most ONE per nurse per month
+    if (ctx.consenteDoppioDMensile) {
+      const dd = countDoppioD(schedule, n, numDays);
+      if (dd > 1) hard += dd - 1;
     }
     // Weekly rest — weighted 2× so the annealer does not systematically strip
     // rest days to patch coverage (which weighs UNDER_COVERAGE_WEIGHT).
@@ -579,7 +621,10 @@ function computeScore(schedule, ctx) {
       const mpMatrix = isMPCycleLimitedNurse(nurseProps[n]);
       for (const wDays of weekDaysList) {
         if (mpMatrix && wDays.length < 7) continue;
-        const need = requiredRest(wDays.length, minRPerWeek);
+        let need = requiredRest(wDays.length, minRPerWeek);
+        // The week hosting the monthly doppio D gave up one rest by design:
+        // lower its requirement instead of flagging the sanctioned recovery D.
+        if (ctx.consenteDoppioDMensile && wDays.some(d => isDoppioDExtraDay(schedule, ctx, n, d))) need--;
         const have = countWeekRest(schedule, n, wDays);
         if (have < need) hard += (need - have) * 2;
       }
@@ -847,7 +892,6 @@ function collectViolations(schedule, ctx) {
     maxCovN,
     minCovD,
     maxCovD,
-    consente2D,
     forbidden,
     nurseProps,
     minRPerWeek,
@@ -920,7 +964,8 @@ function collectViolations(schedule, ctx) {
         if (lastShift) {
           const day0 = schedule[n][0];
           const fb0 = forbidden[lastShift];
-          if (fb0 && fb0.includes(day0))
+          const boundaryDoppioD = lastShift === 'D' && day0 === 'D' && isDoppioDPair(schedule, ctx, n, -1);
+          if (fb0 && fb0.includes(day0) && !boundaryDoppioD)
             violations.push({
               nurse: n,
               day: -1,
@@ -941,30 +986,6 @@ function collectViolations(schedule, ctx) {
               type: 'S_no_R',
               msg: `Infermiere ${n + 1}, confine mese: S non seguito da R`,
             });
-          // D-D boundary checks (when consente2D enabled)
-          if (consente2D) {
-            if (lastShift === 'D' && secondLastShift === 'D' && day0 !== 'R')
-              violations.push({
-                nurse: n,
-                day: -1,
-                type: 'DD_no_R',
-                msg: `Infermiere ${n + 1}, confine mese: D-D non seguito da R`,
-              });
-            if (lastShift === 'D' && day0 === 'D' && numDays > 1 && schedule[n][1] !== 'R')
-              violations.push({
-                nurse: n,
-                day: 0,
-                type: 'DD_no_R',
-                msg: `Infermiere ${n + 1}, confine mese: D-D non seguito da R`,
-              });
-            if (lastShift === 'D' && secondLastShift === 'D' && day0 === 'D')
-              violations.push({
-                nurse: n,
-                day: -1,
-                type: 'DDD',
-                msg: `Infermiere ${n + 1}, confine mese: 3 D consecutivi vietati`,
-              });
-          }
         }
       }
     }
@@ -972,7 +993,7 @@ function collectViolations(schedule, ctx) {
       const cur = schedule[n][d],
         nxt = schedule[n][d + 1];
       const fb = forbidden[cur];
-      if (fb && fb.includes(nxt))
+      if (fb && fb.includes(nxt) && !(cur === 'D' && nxt === 'D' && isDoppioDPair(schedule, ctx, n, d)))
         violations.push({
           nurse: n,
           day: d,
@@ -1000,34 +1021,32 @@ function collectViolations(schedule, ctx) {
       for (let d = -3; d < numDays - 3; d++) {
         if (getShiftAt(schedule, ctx, n, d) !== 'N') continue;
         if (d + 3 >= 0 && schedule[n][d + 3] !== 'R') {
-          violations.push({
-            nurse: n,
-            day: Math.max(0, d),
-            type: 'need_2R_after_night',
-            msg: `Infermiere ${n + 1}, giorno ${Math.max(0, d) + 1}: la matrice D-N-S-R-R richiede due riposi dopo lo smonto`,
-          });
+          // The monthly doppio D may replace the second R (never the first,
+          // never right after the smonto) when it pairs with the next lead-in D.
+          const isDoppioD =
+            schedule[n][d + 3] === 'D' &&
+            d + 4 < numDays &&
+            schedule[n][d + 4] === 'D' &&
+            isDoppioDPair(schedule, ctx, n, d + 3);
+          if (!isDoppioD)
+            violations.push({
+              nurse: n,
+              day: Math.max(0, d),
+              type: 'need_2R_after_night',
+              msg: `Infermiere ${n + 1}, giorno ${Math.max(0, d) + 1}: la matrice D-N-S-R-R richiede due riposi dopo lo smonto`,
+            });
         }
       }
     }
-    if (consente2D) {
-      for (let d = 1; d < numDays - 1; d++) {
-        if (schedule[n][d - 1] === 'D' && schedule[n][d] === 'D' && schedule[n][d + 1] !== 'R')
-          violations.push({
-            nurse: n,
-            day: d,
-            type: 'DD_no_R',
-            msg: `Infermiere ${n + 1}, giorno ${d + 1}: dopo D-D serve R`,
-          });
-      }
-      for (let d = 2; d < numDays; d++) {
-        if (schedule[n][d - 2] === 'D' && schedule[n][d - 1] === 'D' && schedule[n][d] === 'D')
-          violations.push({
-            nurse: n,
-            day: d,
-            type: 'DDD',
-            msg: `Infermiere ${n + 1}, giorno ${d + 1}: 3 diurni consecutivi non consentiti`,
-          });
-      }
+    // Doppio D cap: at most ONE per nurse per month
+    if (ctx.consenteDoppioDMensile) {
+      const dd = countDoppioD(schedule, n, numDays);
+      if (dd > 1)
+        violations.push({
+          nurse: n,
+          type: 'doppio_d_multiplo',
+          msg: `Infermiere ${n + 1}: ${dd} doppi D nel mese (massimo 1 consentito)`,
+        });
     }
     for (let d = 0; d < numDays; d++) {
       if (schedule[n][d] !== 'N') continue;

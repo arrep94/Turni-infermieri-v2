@@ -59,6 +59,9 @@ const solverSharedGlobals = {
   findReperibileDiurno: 'writable',
   needsSecondNightRest: 'writable',
   isNightBlockRestDay: 'writable',
+  isDoppioDPair: 'writable',
+  isDoppioDExtraDay: 'writable',
+  countDoppioD: 'writable',
   // construct.js
   construct: 'writable',
   trySwapMP: 'writable',

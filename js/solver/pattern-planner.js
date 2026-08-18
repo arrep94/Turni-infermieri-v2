@@ -584,7 +584,6 @@ function getPatternFamilies(ctx, n) {
     if (props.soloDiurni || props.diurniNoNotti || ctx.maxCovD > 0) {
       add('diurni-balanced', ['D', 'R', 'D', 'R', 'R']);
       add('diurni-light', ['D', 'R', 'R']);
-      if (ctx.consente2D) add('diurni-double', ['D', 'D', 'R', 'R']);
       return families;
     }
     // no_notti nurses without D headroom fall back to M/P cycles.
@@ -660,7 +659,6 @@ function getDayOnlyPatternFamilies(ctx, n) {
   if (canDayLong) {
     add('diurni-balanced', ['D', 'R', 'D', 'R', 'R']);
     add('diurni-light', ['D', 'R', 'R']);
-    if (ctx.consente2D) add('diurni-double', ['D', 'D', 'R', 'R']);
   }
   if (canMorningAfternoon) {
     for (const pattern of MP_CYCLE_PATTERNS) add('mp-cycle', pattern);
@@ -722,14 +720,8 @@ function patternRowHardCost(row, ctx, n) {
       if (row[d] === 'N' && row[d + 3] !== 'R') hard += 90;
     }
   }
-  if (ctx.consente2D) {
-    for (let d = 1; d < ctx.numDays - 1; d++) {
-      if (row[d - 1] === 'D' && row[d] === 'D' && row[d + 1] !== 'R') hard += 40;
-    }
-    for (let d = 2; d < ctx.numDays; d++) {
-      if (row[d - 2] === 'D' && row[d - 1] === 'D' && row[d] === 'D') hard += 80;
-    }
-  }
+  // D-D pairs other than the (repair-placed) monthly doppio D never appear in
+  // pattern rows; no D-D cost needed here.
   if (ctx.minRPerWeek > 0) {
     // Count weekly-rest deficits: a row structurally unable to rest (deficits in
     // several weeks, e.g. single-R 5-day cycles under minR=2) is a hard reject,

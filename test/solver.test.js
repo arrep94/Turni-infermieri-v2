@@ -153,7 +153,7 @@ function makeMinimalConfig(overrides = {}) {
       minRPerWeek: 1,
       preferDiurni: false,
       coppiaTurni: null,
-      consente2DiurniConsecutivi: false,
+      consenteDoppioDMensile: false,
       consentePomeriggioDiurno: false,
       minGap11h: false,
       ...(overrides.rules || {}),
@@ -890,7 +890,6 @@ describe('isSplitRestDay', () => {
         minCoverageN: 0,
         maxCoverageN: 2,
         minRPerWeek: 0,
-        consente2DiurniConsecutivi: true,
       },
     });
     const bctx = ctx.buildContext(config);
@@ -947,7 +946,7 @@ describe('transitionOk', () => {
     assert.equal(ctx.transitionOk('D', 'M', bctx, dummySchedule, 0, 1), false);
   });
 
-  it('should return false for D -> D when consente2D is false (forbidden)', () => {
+  it('should return false for a generic D -> D (only the monthly doppio D is allowed)', () => {
     assert.equal(ctx.transitionOk('D', 'D', bctx, dummySchedule, 0, 1), false);
   });
 });
@@ -2443,131 +2442,138 @@ describe('buildContext with 5-day previousMonthTail', () => {
   });
 });
 
-describe('buildContext D-D boundary pinning (consente2D)', () => {
-  it('should pin R on day 0 when prev month ends with D-D and consente2D enabled', () => {
-    const config = makeMinimalConfig({
-      numNurses: 2,
-      rules: { consente2DiurniConsecutivi: true },
+describe('doppio D mensile (recupero ore matrice D-N-S-R-R)', () => {
+  const DN_RULES = {
+    minCoverageM: 0,
+    maxCoverageM: 3,
+    minCoverageP: 0,
+    maxCoverageP: 3,
+    minCoverageD: 0,
+    maxCoverageD: 3,
+    minCoverageN: 0,
+    maxCoverageN: 2,
+    targetNights: 6,
+    maxNights: 6,
+    hardMaxNights: 7,
+    minRPerWeek: 2,
+    consenteDoppioDMensile: true,
+  };
+
+  // A D/N-matrix row cycling D-N-S-R-R with a phase offset
+  function dnRow(numDays, phase) {
+    const cycle = ['D', 'N', 'S', 'R', 'R'];
+    return Array.from({ length: numDays }, (_, d) => cycle[(d + phase) % 5]);
+  }
+
+  function dnConfig(numNurses, rulesOverride = {}) {
+    return makeMinimalConfig({
+      numNurses,
+      year: 2026,
+      month: 8, // September 2026: 30 days = 6 whole D-N-S-R-R cycles
+      nurseOverrides: Object.fromEntries(
+        Array.from({ length: numNurses }, (_, i) => [i, { tags: ['diurni_e_notturni'] }])
+      ),
+      rules: { ...DN_RULES, ...rulesOverride },
     });
-    config.previousMonthTail = [['M', 'P', 'R', 'D', 'D'], null];
-    const bctx = ctx.buildContext(config);
-    assert.equal(bctx.pinned[0][0], 'R');
+  }
+
+  it('transitionOk: D→D valido solo al posto del secondo riposo (N-S-R prima)', () => {
+    const bctx = ctx.buildContext(dnConfig(1));
+    const row = dnRow(bctx.numDays, 0); // D N S R R D N S R R …
+    row[4] = 'D'; // replace the SECOND rest → …N S R D | D…
+    const schedule = [row];
+    assert.equal(ctx.transitionOk('D', 'D', bctx, schedule, 0, 5), true);
   });
 
-  it('should not pin R on day 0 for D-D when consente2D is disabled', () => {
-    const config = makeMinimalConfig({
-      numNurses: 2,
-      rules: { consente2DiurniConsecutivi: false },
-    });
-    config.previousMonthTail = [['M', 'P', 'R', 'D', 'D'], null];
-    const bctx = ctx.buildContext(config);
-    // D-D is forbidden when consente2D is false, so no special D-D pinning needed
-    assert.equal(bctx.pinned[0][0], null);
+  it('transitionOk: D→D vietato dopo lo smonto (al posto del primo riposo)', () => {
+    const bctx = ctx.buildContext(dnConfig(1));
+    const row = dnRow(bctx.numDays, 0);
+    row[3] = 'D'; // replace the FIRST rest → …N S D…
+    const schedule = [row];
+    assert.equal(ctx.transitionOk('D', 'D', bctx, schedule, 0, 4), false);
   });
 
-  it('should not pin R when prev month ends with single D', () => {
-    const config = makeMinimalConfig({
-      numNurses: 2,
-      rules: { consente2DiurniConsecutivi: true },
-    });
-    config.previousMonthTail = [['M', 'P', 'R', 'M', 'D'], null];
-    const bctx = ctx.buildContext(config);
-    assert.equal(bctx.pinned[0][0], null);
-  });
-});
+  it('transitionOk: D→D vietato con la regola disattivata o senza tag D/N', () => {
+    const offCtx = ctx.buildContext(dnConfig(1, { consenteDoppioDMensile: false }));
+    const row = dnRow(offCtx.numDays, 0);
+    row[4] = 'D';
+    assert.equal(ctx.transitionOk('D', 'D', offCtx, [row], 0, 5), false);
 
-describe('computeScore D-D boundary (consente2D)', () => {
-  it('should add hard penalty when D-D at boundary and day 0 is not R', () => {
-    const config = makeMinimalConfig({
-      numNurses: 2,
-      rules: { consente2DiurniConsecutivi: true },
-    });
-    config.previousMonthTail = [['M', 'P', 'R', 'D', 'D'], null];
-    const bctx = ctx.buildContext(config);
-    const schedule = Array.from({ length: 2 }, () => new Array(bctx.numDays).fill('R'));
-    // Override day 0 to M instead of R (which was pinned) — simulate unpinned
-    schedule[0][0] = 'M';
-    const score = ctx.computeScore(schedule, bctx);
-    assert.ok(score.hard > 0, 'Should have hard violation for D-D not followed by R');
+    const plainConfig = makeMinimalConfig({ numNurses: 1, year: 2026, month: 8, rules: { ...DN_RULES } });
+    const plainCtx = ctx.buildContext(plainConfig);
+    assert.equal(ctx.transitionOk('D', 'D', plainCtx, [row], 0, 5), false);
   });
 
-  it('should not add D-D penalty when day 0 is R after D-D', () => {
-    const config = makeMinimalConfig({
-      numNurses: 2,
-      rules: { consente2DiurniConsecutivi: true },
-    });
-    config.previousMonthTail = [['M', 'P', 'R', 'D', 'D'], null];
-    const bctx = ctx.buildContext(config);
-    const schedule = Array.from({ length: 2 }, () => new Array(bctx.numDays).fill('R'));
-    // day 0 is R (correct after D-D)
-    const scoreBase = ctx.computeScore(schedule, bctx);
-
-    const configNo = makeMinimalConfig({
-      numNurses: 2,
-      rules: { consente2DiurniConsecutivi: true },
-    });
-    const bctxNo = ctx.buildContext(configNo);
-    const scoreNo = ctx.computeScore(schedule, bctxNo);
-    assert.equal(scoreBase.hard, scoreNo.hard, 'No extra hard violations when D-D followed by R');
+  it('un doppio D valido non genera violazioni di transizione né need_2R_after_night', () => {
+    const bctx = ctx.buildContext(dnConfig(1));
+    const row = dnRow(bctx.numDays, 0);
+    row[4] = 'D'; // valid doppio D: N S R D D N …
+    const violations = ctx.collectViolations([row], bctx);
+    const bad = violations.filter(
+      v => v.type === 'transition' || v.type === 'need_2R_after_night' || v.type === 'doppio_d_multiplo'
+    );
+    assert.deepEqual(toPlain(bad), []);
   });
 
-  it('should add hard penalty for 3 consecutive D at boundary', () => {
-    const config = makeMinimalConfig({
-      numNurses: 2,
-      rules: { consente2DiurniConsecutivi: true },
-    });
-    config.previousMonthTail = [['M', 'P', 'R', 'D', 'D'], null];
-    const bctx = ctx.buildContext(config);
-    const schedule = Array.from({ length: 2 }, () => new Array(bctx.numDays).fill('R'));
-    schedule[0][0] = 'D'; // D-D-D at boundary
-    const score = ctx.computeScore(schedule, bctx);
-    assert.ok(score.hard > 0, 'Should have hard violation for 3 consecutive D');
-  });
-});
-
-describe('collectViolations D-D boundary (consente2D)', () => {
-  it('should report D-D not followed by R at month boundary', () => {
-    const config = makeMinimalConfig({
-      numNurses: 2,
-      rules: { consente2DiurniConsecutivi: true },
-    });
-    config.previousMonthTail = [['M', 'P', 'R', 'D', 'D'], null];
-    const bctx = ctx.buildContext(config);
-    const schedule = Array.from({ length: 2 }, () => new Array(bctx.numDays).fill('R'));
-    schedule[0][0] = 'M'; // D-D followed by M (not R)
-    const violations = ctx.collectViolations(schedule, bctx);
-    const ddViolations = violations.filter(v => v.type === 'DD_no_R');
-    assert.ok(ddViolations.length > 0, 'Should have D-D boundary violation');
-    assert.ok(ddViolations[0].msg.includes('confine mese'));
+  it('un D extra SENZA doppio D (non seguito da D) resta una violazione della matrice', () => {
+    const bctx = ctx.buildContext(dnConfig(1));
+    const row = dnRow(bctx.numDays, 0);
+    row[4] = 'D';
+    row[5] = 'R'; // the extra D is NOT paired with the next lead-in D
+    const violations = ctx.collectViolations([row], bctx);
+    assert.ok(
+      violations.some(v => v.type === 'need_2R_after_night' || v.type === 'transition'),
+      'lone replacement of the second rest must stay flagged'
+    );
   });
 
-  it('should report 3 consecutive D at month boundary', () => {
-    const config = makeMinimalConfig({
-      numNurses: 2,
-      rules: { consente2DiurniConsecutivi: true },
-    });
-    config.previousMonthTail = [['M', 'P', 'R', 'D', 'D'], null];
-    const bctx = ctx.buildContext(config);
-    const schedule = Array.from({ length: 2 }, () => new Array(bctx.numDays).fill('R'));
-    schedule[0][0] = 'D'; // D-D-D
-    const violations = ctx.collectViolations(schedule, bctx);
-    const dddViolations = violations.filter(v => v.type === 'DDD');
-    assert.ok(dddViolations.length > 0, 'Should have DDD boundary violation');
-    assert.ok(dddViolations[0].msg.includes('3 D consecutivi'));
+  it('due doppi D nello stesso mese sono segnalati (massimo 1)', () => {
+    const bctx = ctx.buildContext(dnConfig(1));
+    const row = dnRow(bctx.numDays, 0);
+    row[4] = 'D'; // first doppio D
+    row[9] = 'D'; // second doppio D
+    const violations = ctx.collectViolations([row], bctx);
+    const multi = violations.filter(v => v.type === 'doppio_d_multiplo');
+    assert.equal(multi.length, 1);
+    const score = ctx.computeScore([row], bctx);
+    assert.ok(score.hard > 0, 'the second doppio D must cost hard points');
   });
 
-  it('should not report D-D violations when consente2D is disabled', () => {
-    const config = makeMinimalConfig({
-      numNurses: 2,
-      rules: { consente2DiurniConsecutivi: false },
-    });
-    config.previousMonthTail = [['M', 'P', 'R', 'D', 'D'], null];
+  it('repairDoppioD piazza al massimo un D extra per infermiere sotto monte ore', () => {
+    const numNurses = 5;
+    const config = dnConfig(numNurses);
     const bctx = ctx.buildContext(config);
-    const schedule = Array.from({ length: 2 }, () => new Array(bctx.numDays).fill('R'));
-    schedule[0][0] = 'M';
-    const violations = ctx.collectViolations(schedule, bctx);
-    const ddViolations = violations.filter(v => v.type === 'DD_no_R' || v.type === 'DDD');
-    assert.equal(ddViolations.length, 0, 'Should not have D-D boundary violations when consente2D is disabled');
+    const schedule = Array.from({ length: numNurses }, (_, i) => dnRow(bctx.numDays, i));
+    const before = ctx.computeScore(schedule, bctx);
+    const repaired = ctx.repairDoppioD(schedule, bctx);
+    const after = ctx.computeScore(repaired, bctx);
+    assert.ok(after.hard <= before.hard, 'repair must not add hard violations');
+
+    let placed = 0;
+    for (let n = 0; n < numNurses; n++) {
+      let pairs = 0;
+      for (let d = 0; d < bctx.numDays - 1; d++) {
+        if (repaired[n][d] === 'D' && repaired[n][d + 1] === 'D') {
+          pairs++;
+          // structure: N-S-R right before the extra D (never after smonto,
+          // first rest untouched)
+          assert.equal(repaired[n][d - 1], 'R');
+          assert.equal(repaired[n][d - 2], 'S');
+          assert.equal(repaired[n][d - 3], 'N');
+        }
+      }
+      assert.ok(pairs <= 1, `nurse ${n}: at most one doppio D (got ${pairs})`);
+      placed += pairs;
+    }
+    assert.ok(placed >= 1, 'at least one under-hours nurse must receive the recovery D');
+  });
+
+  it('repairDoppioD non fa nulla con la regola disattivata', () => {
+    const config = dnConfig(3, { consenteDoppioDMensile: false });
+    const bctx = ctx.buildContext(config);
+    const schedule = Array.from({ length: 3 }, (_, i) => dnRow(bctx.numDays, i));
+    const repaired = ctx.repairDoppioD(schedule, bctx);
+    assert.deepEqual(toPlain(repaired), toPlain(schedule));
   });
 });
 

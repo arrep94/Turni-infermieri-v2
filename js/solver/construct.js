@@ -46,7 +46,6 @@ function construct(ctx) {
     maxNights,
     preferDiurni,
     coppiaTurni,
-    consente2D,
     minRPerWeek,
     weekDaysList,
   } = ctx;
@@ -576,7 +575,6 @@ function construct(ctx) {
     if (s === 'D' && (nurseProps[n].noDiurni || nurseProps[n].mattineEPomeriggi)) return false;
     const prev = d > 0 ? schedule[n][d - 1] : null;
     if (!transitionOk(prev, s, ctx, schedule, n, d)) return false;
-    if (consente2D && s === 'D' && prev === 'D' && d + 1 < numDays && schedule[n][d + 1] !== null) return false;
     if (s === 'N') {
       if (d + 1 < numDays && schedule[n][d + 1] !== null) return false;
       if (d + 2 < numDays && schedule[n][d + 2] !== null) return false;
@@ -932,24 +930,6 @@ function construct(ctx) {
       if (sameType) {
         for (let d = 0; d < numDays; d++) {
           if (!pinned[n2][d]) schedule[n2][d] = schedule[n1][d];
-        }
-      }
-    }
-  }
-
-  // Phase 4.8 — D-D rest enforcement
-  if (consente2D) {
-    for (let n = 0; n < numNurses; n++) {
-      for (let d = 1; d < numDays - 1; d++) {
-        if (schedule[n][d - 1] !== 'D' || schedule[n][d] !== 'D') continue;
-        if (schedule[n][d + 1] === 'R' || pinned[n][d + 1]) continue;
-        const s = schedule[n][d + 1];
-        if (s === 'M' || s === 'P') {
-          const cov = dayCoverage(schedule, d + 1, numNurses);
-          if ((s === 'M' ? cov.M : cov.P) > (s === 'M' ? minCovM : minCovP)) schedule[n][d + 1] = 'R';
-        } else if (s === 'D') {
-          const cov = dayCoverage(schedule, d + 1, numNurses);
-          if (cov.M > minCovM && cov.P > minCovP && cov.D > 1) schedule[n][d + 1] = 'R';
         }
       }
     }

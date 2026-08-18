@@ -213,6 +213,7 @@ function localSearch(schedule, ctx, maxIter, timeLimitSec) {
     repaired = repairReperibileDiurnoFestivo(repaired, ctx);
     repaired = repairWeeklyRestDeficits(repaired, ctx);
     repaired = repairRestExcess(repaired, ctx);
+    repaired = repairDoppioD(repaired, ctx);
     if (repaired.map(row => row.join('|')).join('\n') === beforePass) break;
   }
   return repaired;
@@ -513,6 +514,51 @@ function repairReperibile(schedule, ctx) {
         done = true;
       }
     }
+  }
+
+  return repaired;
+}
+
+/**
+ * "Doppio D mensile" (hour recovery for the rigid D-N-S-R-R matrix): for each
+ * diurni_e_notturni nurse below their personal monte ore, convert AT MOST ONE
+ * second rest of a night block into an extra D — only where it forms a D-D
+ * pair with the next block's lead-in D (structure N-S-R-D-D-N). The first rest
+ * is never touched and nothing is ever placed right after the smonto. Guarded
+ * by ctx.consenteDoppioDMensile and accepted only when the score improves
+ * without new hard violations.
+ */
+function repairDoppioD(schedule, ctx) {
+  if (!ctx.consenteDoppioDMensile) return schedule;
+  const { numDays, numNurses, nurseProps, pinned } = ctx;
+  let repaired = schedule;
+
+  for (let n = 0; n < numNurses; n++) {
+    if (!nurseProps[n].diurniENotturni) continue;
+    if (countDoppioD(repaired, n, numDays) >= 1) continue;
+    // Only when the nurse is meaningfully below the personal target: the extra
+    // D is a recovery shift, not a way to push people above the monte ore.
+    const target = ctx.monthlyTargetHours + (ctx.hourDeltas ? ctx.hourDeltas[n] || 0 : 0);
+    if (nurseHours(repaired, n, numDays) + SHIFT_HOURS.D / 2 >= target) continue;
+
+    const currentScore = computeScore(repaired, ctx);
+    let best = null;
+    for (let x = 3; x < numDays - 1; x++) {
+      // x = the SECOND rest of a N-S-R-R block, followed by the next block's D
+      if (pinned[n][x] || repaired[n][x] !== 'R') continue;
+      if (repaired[n][x - 1] !== 'R' || repaired[n][x - 2] !== 'S' || repaired[n][x - 3] !== 'N') continue;
+      if (repaired[n][x + 1] !== 'D') continue;
+      // Coverage headroom: the extra D counts toward D, M and P
+      const cov = dayCoverage(repaired, x, numNurses);
+      if (cov.D >= ctx.maxCovD || cov.M >= ctx.maxCovM || cov.P >= ctx.maxCovP) continue;
+      const candidate = deepCopy(repaired);
+      candidate[n][x] = 'D';
+      const score = computeScore(candidate, ctx);
+      if (score.hard > currentScore.hard) continue;
+      if (score.total >= currentScore.total) continue;
+      if (!best || score.total < best.score.total) best = { schedule: candidate, score };
+    }
+    if (best) repaired = best.schedule;
   }
 
   return repaired;
@@ -1470,7 +1516,6 @@ function tryEquityMove(schedule, ctx, changes, cachedHours, dayIndices) {
     minRPerWeek,
     weekDaysList,
     weekOf,
-    consente2D,
     hourDeltas,
     monthlyTargetHours,
   } = ctx;
@@ -1522,17 +1567,9 @@ function tryEquityMove(schedule, ctx, changes, cachedHours, dayIndices) {
         if (covUp.D >= ctx.maxCovD || covUp.M >= maxCovM || covUp.P >= maxCovP) continue;
         if (!transitionOk(prev, 'D', ctx, schedule, n, d)) continue;
         if (!transitionOk('D', next, ctx, schedule, n, d + 1)) continue;
-        if (consente2D) {
-          if (prev === 'D') {
-            if (next !== null && next !== 'R') continue;
-            if (d > 1 && schedule[n][d - 2] === 'D') continue;
-          }
-          if (next === 'D') {
-            const next2 = d + 2 < numDays ? schedule[n][d + 2] : null;
-            if (next2 !== null && next2 !== 'R') continue;
-            if (prev === 'D') continue;
-          }
-        } else if (prev === 'D' || next === 'D') continue;
+        // D-D only exists as the monthly doppio D, placed exclusively by
+        // repairDoppioD: the equity move never builds D next to D.
+        if (prev === 'D' || next === 'D') continue;
         setCell(schedule, n, d, 'D', changes);
         return true;
       } else {

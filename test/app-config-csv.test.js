@@ -240,7 +240,7 @@ describe('config CSV helpers', () => {
       rules: {
         ...defaultRules,
         minCoverageM: 5,
-        consente2DiurniConsecutivi: true,
+        consenteDoppioDMensile: false,
         coppiaTurni: [0, 1],
         fasciaOraria: '7-10',
       },
@@ -255,7 +255,7 @@ describe('config CSV helpers', () => {
     assert.equal(result.config.totalNurses, 3);
     assert.equal(result.config.absentNurses, 1);
     assert.equal(result.config.rules.minCoverageM, 5);
-    assert.equal(result.config.rules.consente2DiurniConsecutivi, true);
+    assert.equal(result.config.rules.consenteDoppioDMensile, false);
     assert.deepEqual(toPlain(result.config.rules.coppiaTurni), [0, 1]);
     assert.equal(result.config.rules.fasciaOraria, '7-10');
     assert.equal(result.config.nurses[0].name, 'Rossi, Maria');

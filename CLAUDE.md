@@ -376,7 +376,7 @@ Scores combine hard and soft penalties: `total = hard * 1000 + soft`. A score wi
 
 9. **`state.timeBudget` has three modes** -- `0` means auto (estimated from constraints), `> 0` means user-specified seconds, `-1` means keep trying until zero violations.
 
-10. **The `forbidden` transition table is mutable** -- `buildContext()` copies `BASE_FORBIDDEN_NEXT` and then conditionally removes entries based on rule flags (`consentePomeriggioDiurno`, `consente2DiurniConsecutivi`). Always modify the copy, never the base.
+10. **The `forbidden` transition table is mutable** -- `buildContext()` copies `BASE_FORBIDDEN_NEXT` and then conditionally removes entries based on rule flags (`consentePomeriggioDiurno`). Always modify the copy, never the base. D→D stays in the table: the only legal pair is the **doppio D mensile** (`consenteDoppioDMensile`, default true in the UI) — at most ONE extra D per month per `diurni_e_notturni` nurse, replacing the SECOND rest of a D-N-S-R-R block (N-S-R right before it; never the first rest, never after the smonto), validated structurally by `isDoppioDPair`/`isDoppioDExtraDay`/`countDoppioD` in scoring.js and placed only by `repairDoppioD` in local-search.js for nurses below their personal monte ore.
 
 ---
 

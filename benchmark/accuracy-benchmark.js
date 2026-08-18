@@ -115,7 +115,7 @@ function baseRules(overrides) {
     minRPerWeek: 2,
     preferDiurni: false,
     coppiaTurni: [4, 5],
-    consente2DiurniConsecutivi: false,
+    consenteDoppioDMensile: false,
     consentePomeriggioDiurno: false,
     minGap11h: true,
     minHours: 130,
