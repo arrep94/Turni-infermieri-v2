@@ -1202,8 +1202,132 @@ function buildWorkerRuntimeDiagnostic(err, actionLabel) {
 // Step 2 — Regole
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Suggested coverage — compute the per-day units for M/P/D/N that saturate the
+// monte ore given the roster's limitations, within the ward cap of 8 per shift.
+// ---------------------------------------------------------------------------
+
+const COVERAGE_CAP = 8;
+
+/**
+ * Month-average daily supply per shift, derived from the rigid matrices:
+ *  - diurni_e_notturni: cycle D-N-S-R-R → 1/5 of the group on D and 1/5 on N
+ *    every day (plus the doppio D headroom on the maximum);
+ *  - solo_notti: N-S-R → 1/3 on N; solo_diurni ≈ 1 day on 2 on D;
+ *  - solo_mattine / matrice M/P / 4 mattine+notte ven.: weekday-only M/P
+ *    presence (weekend rests are pinned);
+ *  - free profiles: ~5 presences on 7 days, nights ≈ targetNights/month.
+ * Nurses absent for the WHOLE month give no supply.
+ */
+function suggestCoverage() {
+  const activeCount = state.totalNurses - state.absentNurses;
+  const activeNurses = state.nurses.slice(0, activeCount);
+  const numDays = daysInMonth(state.year, state.month);
+  const present = activeNurses.filter(nurse => {
+    for (let day = 1; day <= numDays; day++) {
+      if (!isNurseAbsentOnDay(nurse, state.year, state.month, day)) return true;
+    }
+    return false;
+  });
+  const has = (nurse, t) => (nurse.tags || []).includes(t);
+  let dn = 0,
+    sn = 0,
+    sd = 0,
+    sm = 0,
+    qmv = 0,
+    mp = 0,
+    dnn = 0,
+    freeMP = 0,
+    flex = 0;
+  present.forEach(nurse => {
+    if (has(nurse, 'diurni_e_notturni')) dn++;
+    else if (has(nurse, 'solo_notti')) sn++;
+    else if (has(nurse, 'solo_diurni')) sd++;
+    else if (has(nurse, 'solo_mattine')) sm++;
+    else if (has(nurse, 'quattro_mattine_venerdi_notte')) qmv++;
+    else if (has(nurse, 'mattine_e_pomeriggi') || (has(nurse, 'no_notti') && has(nurse, 'no_diurni'))) mp++;
+    else if (has(nurse, 'diurni_no_notti')) dnn++;
+    else if (has(nurse, 'no_notti')) freeMP++;
+    else flex++;
+  });
+
+  // Daily bodies per shift (month average)
+  const nSupply = dn / 5 + sn / 3 + qmv / 7 + flex / 6;
+  const dSupply = dn / 5 + sd * 0.5 + dnn * 0.4;
+  const flexMP = Math.max(0, (flex * 5) / 7 - flex / 6) + (freeMP * 5) / 7;
+  // Weekends lose the weekday-only profiles: minimums must hold there too.
+  const mpWeekend = dSupply + flexMP / 2;
+  const mWeekday = mpWeekend + sm + qmv * (4 / 5) + mp * 0.5;
+  const pWeekday = mpWeekend + mp * 0.5;
+
+  const cap = v => Math.max(0, Math.min(COVERAGE_CAP, v));
+  const suggestion = {
+    minCoverageN: cap(Math.floor(nSupply)),
+    maxCoverageN: cap(Math.max(1, Math.floor(nSupply) + 1)),
+    // One unit of slack under the average: the matrix alignment makes single
+    // days dip below the month average without any real shortage.
+    minCoverageD: cap(Math.max(0, Math.floor(dSupply) - 1)),
+    // Headroom above the average hosts the doppi D di recupero ore.
+    maxCoverageD: cap(Math.ceil(dSupply) + (state.rules.consenteDoppioDMensile ? 2 : 1)),
+    minCoverageM: cap(Math.floor(mpWeekend)),
+    maxCoverageM: cap(Math.ceil(mWeekday) + 1),
+    minCoverageP: cap(Math.floor(mpWeekend)),
+    maxCoverageP: cap(Math.ceil(pWeekday) + 1),
+  };
+  // Guards: max ≥ min everywhere
+  suggestion.maxCoverageN = Math.max(suggestion.maxCoverageN, suggestion.minCoverageN);
+  suggestion.maxCoverageD = Math.max(suggestion.maxCoverageD, suggestion.minCoverageD);
+  suggestion.maxCoverageM = Math.max(suggestion.maxCoverageM, suggestion.minCoverageM);
+  suggestion.maxCoverageP = Math.max(suggestion.maxCoverageP, suggestion.minCoverageP);
+  return { suggestion, present: present.length, counts: { dn, sn, sd, sm, qmv, mp, dnn, freeMP, flex } };
+}
+
+function renderCoverageSuggestion() {
+  const el = document.getElementById('coverage-suggestion');
+  if (!el) return;
+  const activeCount = state.totalNurses - state.absentNurses;
+  if (activeCount <= 0) {
+    el.innerHTML = '';
+    return;
+  }
+  const { suggestion, present } = suggestCoverage();
+  const r = state.rules;
+  const same =
+    r.minCoverageM === suggestion.minCoverageM &&
+    r.maxCoverageM === suggestion.maxCoverageM &&
+    r.minCoverageP === suggestion.minCoverageP &&
+    r.maxCoverageP === suggestion.maxCoverageP &&
+    r.minCoverageD === suggestion.minCoverageD &&
+    r.maxCoverageD === suggestion.maxCoverageD &&
+    r.minCoverageN === suggestion.minCoverageN &&
+    r.maxCoverageN === suggestion.maxCoverageN;
+  el.innerHTML = `<div class="p-3 bg-sky-50 dark:bg-sky-950 border border-sky-300 dark:border-sky-700 rounded-lg">
+      <p class="text-sm font-semibold text-sky-700 dark:text-sky-300">💡 Coperture consigliate per questo organico (${present} presenti, tetto ${COVERAGE_CAP} per fascia)</p>
+      <p class="text-sm mt-1 text-sky-800 dark:text-sky-200">
+        Mattina <strong>${suggestion.minCoverageM}–${suggestion.maxCoverageM}</strong> ·
+        Pomeriggio <strong>${suggestion.minCoverageP}–${suggestion.maxCoverageP}</strong> ·
+        Diurno <strong>${suggestion.minCoverageD}–${suggestion.maxCoverageD}</strong> ·
+        Notte <strong>${suggestion.minCoverageN}–${suggestion.maxCoverageN}</strong>
+      </p>
+      <p class="text-xs mt-1 text-sky-600 dark:text-sky-400">Calcolate dalle limitazioni (matrici, assenze del mese) per saturare il monte ore; i massimi lasciano spazio ai turni di recupero.</p>
+      ${
+        same
+          ? '<p class="text-xs mt-2 font-semibold text-green-600 dark:text-green-400">✅ Già applicate</p>'
+          : '<button id="btn-apply-suggested-coverage" class="btn mt-2 px-3 py-1.5 bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold rounded-lg">Applica coperture consigliate</button>'
+      }
+    </div>`;
+  document.getElementById('btn-apply-suggested-coverage')?.addEventListener('click', () => {
+    Object.assign(state.rules, suggestion);
+    applyFasciaOraria(state.rules.fasciaOraria);
+    saveState();
+    renderStep2();
+    renderGenerateStep();
+  });
+}
+
 function renderStep2() {
   const r = state.rules;
+  renderCoverageSuggestion();
 
   // Coverage sliders - Mattina
   bindRange('sl-min-cov-m', 'val-min-cov-m', r.minCoverageM, v => {

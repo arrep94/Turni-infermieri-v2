@@ -389,6 +389,40 @@ describe('config CSV helpers', () => {
   });
 });
 
+describe('coperture consigliate (suggestCoverage)', () => {
+  it('per il reparto D/N reale suggerisce N 6-7, D 5-8, M/P 6-8 (tetto 8)', () => {
+    const currentState = toPlain(ctx._getAppState());
+    const nurses = [];
+    nurses.push({ id: 's1', name: 'Solo Mattine', tags: ['solo_mattine'], absencePeriods: {} });
+    nurses.push({ id: 's2', name: 'Matrice MP', tags: ['mattine_e_pomeriggi'], absencePeriods: {} });
+    for (let i = 0; i < 31; i++) {
+      nurses.push({ id: 'd' + i, name: 'DN ' + i, tags: ['diurni_e_notturni'], absencePeriods: {} });
+    }
+    // Assente tutto il mese: non conta nelle coperture
+    nurses.push({ id: 'm1', name: 'In Maternita', tags: ['diurni_e_notturni', 'maternita'], absencePeriods: {} });
+    ctx._setAppState({
+      ...currentState,
+      year: 2026,
+      month: 8,
+      totalNurses: 34,
+      absentNurses: 0,
+      nurses,
+      rules: { ...currentState.rules, consenteDoppioDMensile: true },
+    });
+    const { suggestion, present } = toPlain(ctx.suggestCoverage());
+    assert.equal(present, 33, 'la collega in maternita non conta');
+    assert.equal(suggestion.minCoverageN, 6);
+    assert.equal(suggestion.maxCoverageN, 7);
+    assert.equal(suggestion.minCoverageD, 5);
+    assert.equal(suggestion.maxCoverageD, 8);
+    assert.equal(suggestion.minCoverageM, 6);
+    assert.equal(suggestion.maxCoverageM, 8);
+    assert.equal(suggestion.minCoverageP, 6);
+    assert.equal(suggestion.maxCoverageP, 8);
+    ctx._setAppState(currentState);
+  });
+});
+
 describe('manual fixed-pattern protections', () => {
   it('should allow manual edits on the 4 mattine + notte ven. nurse', () => {
     const currentState = toPlain(ctx._getAppState());
