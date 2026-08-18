@@ -192,7 +192,14 @@ describe('property: invarianti strutturali su roster casuali', () => {
             if (row[d] !== 'R') continue;
             const prevR = d > 0 && row[d - 1] === 'R';
             const nextR = d + 1 < numDays && row[d + 1] === 'R';
-            assert.ok(prevR || nextR, `${label}: lone R at day ${d + 1} (R-R pair must stay adjacent)`);
+            // Weekend-pinned rests: a lone R at a month edge is legal when the
+            // pair crosses the boundary (month starting Sunday / ending Saturday).
+            const dow = new Date(config.year, config.month, d + 1).getDay();
+            const boundaryWeekend = (d === 0 && dow === 0) || (d === numDays - 1 && dow === 6);
+            assert.ok(
+              prevR || nextR || boundaryWeekend,
+              `${label}: lone R at day ${d + 1} (R-R pair must stay adjacent)`
+            );
           }
         }
       }
@@ -200,8 +207,8 @@ describe('property: invarianti strutturali su roster casuali', () => {
   }
 });
 
-describe('rotazione sfalsata coordinata (matrici M/P)', () => {
-  it('i riposi delle matrici M/P non si concentrano sugli stessi giorni', () => {
+describe('riposi weekend delle matrici M/P', () => {
+  it('i riposi delle matrici M/P cadono sempre sabato e domenica', () => {
     const nurses = [];
     for (let i = 0; i < 7; i++) nurses.push({ name: `MP${i}`, tags: ['mattine_e_pomeriggi'], absencePeriods: {} });
     for (let i = 0; i < 4; i++) nurses.push({ name: `Free${i}`, tags: [], absencePeriods: {} });
@@ -241,12 +248,18 @@ describe('rotazione sfalsata coordinata (matrici M/P)', () => {
         ctx
       )
     );
-    // 7 nurses × 2 R per 7-day cycle = on average 2 resting per day; with the
-    // coordinated stagger no single day may concentrate most of the group.
+    // Ward rule: the two weekly rests of the M/P matrix are FIXED on
+    // Saturday+Sunday; every weekday is a work day (M or P).
     for (let d = 0; d < result.numDays; d++) {
-      let resting = 0;
-      for (let n = 0; n < 7; n++) if (result.schedule[n][d] === 'R') resting++;
-      assert.ok(resting <= 4, `day ${d + 1}: ${resting}/7 M/P-matrix nurses resting at once`);
+      const dow = new Date(2026, 2, d + 1).getDay();
+      for (let n = 0; n < 7; n++) {
+        const cell = result.schedule[n][d];
+        if (dow === 0 || dow === 6) {
+          assert.equal(cell, 'R', `nurse ${n} day ${d + 1}: weekend must be R (got ${cell})`);
+        } else {
+          assert.ok(cell === 'M' || cell === 'P', `nurse ${n} day ${d + 1}: weekday must be M/P (got ${cell})`);
+        }
+      }
     }
   });
 });

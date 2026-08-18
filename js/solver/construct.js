@@ -492,15 +492,31 @@ function construct(ctx) {
       // no lone second R on day 1 (unless the previous month really ended with the
       // first R) and no lone first R on the last day of the month.
       const prevShift = getPrevTailShift(ctx, n);
+      // Weekend-aligned rests: a month starting on Sunday opens on the lone
+      // second R, a month ending on Saturday closes on the first R - both are
+      // legal calendar artifacts of the fixed Sat+Sun rest pair.
+      const startsOnSunday = ctx.dows[0] === 0;
+      const endsOnSaturday = ctx.dows[numDays - 1] === 6;
       const allowedCuts = [];
       for (let cut = 0; cut < cycleLen; cut++) {
-        if (cut === cycleLen - 1 && prevShift !== 'R') continue;
-        if ((cut + numDays - 1) % cycleLen === cycleLen - 2) continue;
+        if (cut === cycleLen - 1 && prevShift !== 'R' && !startsOnSunday) continue;
+        if ((cut + numDays - 1) % cycleLen === cycleLen - 2 && !endsOnSaturday) continue;
         allowedCuts.push(cut);
       }
       if (allowedCuts.length === 0) {
         mpCutChoices.set(n, 0);
         continue;
+      }
+      // Weekend-pinned rests (Sat+Sun are R by contract): the phase is fully
+      // determined by the calendar - the pattern's R-R slots (5,6) must land on
+      // Saturday/Sunday. Any other cut would fight the pinned cells.
+      {
+        const firstSaturdayIdx = (6 - ctx.dows[0] + 7) % 7;
+        const alignedCut = (5 - firstSaturdayIdx + 7 * 2) % 7;
+        if (allowedCuts.includes(alignedCut)) {
+          mpCutChoices.set(n, alignedCut);
+          continue;
+        }
       }
       if (!restLoad[cycleLen]) restLoad[cycleLen] = new Array(cycleLen).fill(0);
       const load = restLoad[cycleLen];

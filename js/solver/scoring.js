@@ -347,20 +347,26 @@ function getPrevTailShift(ctx, n) {
   return tail && tail.length > 0 ? tail[tail.length - 1] : null;
 }
 
-function getMPCyclePlan(schedule, nurseIdx, numDays, props, prevShift) {
+function getMPCyclePlan(schedule, nurseIdx, numDays, props, prevShift, dows) {
   const row = schedule[nurseIdx];
   const basePatterns = getAllowedMPCyclePatterns(props);
+  // Weekend-aligned rests (the M/P matrix rests every Saturday+Sunday) make the
+  // month edges special: a month ending on Saturday legitimately closes on the
+  // first R (Sunday falls in the next month) and a month starting on Sunday
+  // legitimately opens with the lone second R. `dows` (0=Sun..6=Sat), when
+  // provided, enables those two calendar exemptions.
+  const endsOnSaturday = !!(dows && dows[numDays - 1] === 6);
+  const startsOnSunday = !!(dows && dows[0] === 0);
   // At month start the nurse may be mid-cycle (phase offset): allow suffixes of
-  // a pattern as the first segment so rest days can be staggered between nurses
-  // while every full cycle stays a rigid 5-work + 2-rest week. The two rests
-  // must stay ADJACENT inside the month: a suffix starting with the lone second
-  // R is allowed only when the previous month actually ended with the first R
-  // (prevShift === 'R', from the continuity data).
+  // a pattern as the first segment. The two rests must stay ADJACENT inside the
+  // month: a suffix starting with the lone second R is allowed only when the
+  // previous month actually ended with the first R (prevShift === 'R') or when
+  // day 1 is a Sunday (weekend pair crossing the boundary).
   const phasePatterns = [];
   for (const pattern of basePatterns) {
     for (let cut = 1; cut < pattern.length; cut++) {
       const suffix = pattern.slice(cut);
-      if (suffix[0] === 'R' && suffix.length === 1 && prevShift !== 'R') continue;
+      if (suffix[0] === 'R' && suffix.length === 1 && prevShift !== 'R' && !startsOnSunday) continue;
       phasePatterns.push(suffix);
     }
   }
@@ -380,12 +386,14 @@ function getMPCyclePlan(schedule, nurseIdx, numDays, props, prevShift) {
     if (blockLen === 0) return null;
     // Month-end truncation that splits the R-R pair (the month closes on the
     // first R with the second one falling into the next month) counts as a
-    // mismatch: the two weekly rests must stay adjacent inside the month.
+    // mismatch - EXCEPT when the month ends on a Saturday: the weekend pair
+    // completes on the next month's Sunday.
     if (
       startDay + blockLen === numDays &&
       blockLen < pattern.length &&
       pattern[blockLen] === 'R' &&
-      pattern[blockLen - 1] === 'R'
+      pattern[blockLen - 1] === 'R' &&
+      !endsOnSaturday
     ) {
       mismatch++;
     }
@@ -686,7 +694,7 @@ function computeScore(schedule, ctx) {
       if (hasForbiddenExtraNightRest(schedule, ctx, n, d)) hard++;
     }
     if (isMPCycleLimitedNurse(nurseProps[n])) {
-      hard += getMPCyclePlan(schedule, n, numDays, nurseProps[n], getPrevTailShift(ctx, n)).mismatch;
+      hard += getMPCyclePlan(schedule, n, numDays, nurseProps[n], getPrevTailShift(ctx, n), ctx.dows).mismatch;
     }
   }
 
@@ -1124,7 +1132,7 @@ function collectViolations(schedule, ctx) {
         });
     }
     if (isMPCycleLimitedNurse(nurseProps[n])) {
-      const plan = getMPCyclePlan(schedule, n, numDays, nurseProps[n], getPrevTailShift(ctx, n));
+      const plan = getMPCyclePlan(schedule, n, numDays, nurseProps[n], getPrevTailShift(ctx, n), ctx.dows);
       for (const segment of plan.segments) {
         if (segment.mismatch > 0) {
           violations.push({

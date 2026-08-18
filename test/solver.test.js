@@ -168,15 +168,17 @@ const MP_CYCLE_PATTERNS = [
   ['M', 'M', 'M', 'M', 'P', 'R', 'R'],
 ];
 
-function assertMatchesMPCycle(row, messagePrefix, patterns = MP_CYCLE_PATTERNS) {
+function assertMatchesMPCycle(row, messagePrefix, patterns = MP_CYCLE_PATTERNS, edges = {}) {
   const memo = new Map();
   // The first segment may be a suffix of a pattern (phase offset at month
   // start), mirroring getMPCyclePlan in js/solver/scoring.js. The R-R pair
-  // must stay adjacent inside the month: no lone second R on day 1 and no
-  // lone first R on the last day.
+  // must stay adjacent inside the month: no lone second R on day 1 (unless the
+  // month starts on Sunday - weekend pair crossing the boundary) and no lone
+  // first R on the last day (unless the month ends on Saturday).
   const phasePatterns = [];
   for (const pattern of patterns) {
-    for (let cut = 1; cut < pattern.length - 1; cut++) phasePatterns.push(pattern.slice(cut));
+    const maxCut = edges.startsOnSunday ? pattern.length : pattern.length - 1;
+    for (let cut = 1; cut < maxCut; cut++) phasePatterns.push(pattern.slice(cut));
   }
 
   function matches(start) {
@@ -186,8 +188,13 @@ function assertMatchesMPCycle(row, messagePrefix, patterns = MP_CYCLE_PATTERNS) 
     for (const pattern of candidates) {
       const blockLen = Math.min(pattern.length, row.length - start);
       const ok = row.slice(start, start + blockLen).every((shift, idx) => shift === pattern[idx]);
-      // Reject month-end truncation that splits the R-R pair.
-      const splitsRestPair = blockLen < pattern.length && pattern[blockLen] === 'R' && pattern[blockLen - 1] === 'R';
+      // Reject month-end truncation that splits the R-R pair (Saturday-ending
+      // months excepted: the pair completes on next month's Sunday).
+      const splitsRestPair =
+        blockLen < pattern.length &&
+        pattern[blockLen] === 'R' &&
+        pattern[blockLen - 1] === 'R' &&
+        !edges.endsOnSaturday;
       if (ok && !splitsRestPair && matches(start + blockLen)) {
         memo.set(start, true);
         return true;
@@ -557,9 +564,13 @@ describe('buildContext', () => {
     // nurseProps should reflect the tag
     assert.equal(bctx.nurseProps[0].mattineEPomeriggi, true);
     assert.equal(bctx.nurseProps[1].mattineEPomeriggi, false);
-    // Unlike solo_mattine, mattine_e_pomeriggi nurses are NOT pinned
-    assert.equal(bctx.pinned[0][0], null);
-    assert.equal(bctx.pinned[0][3], null);
+    // Weekday cells stay free (M/P mix chosen by coverage), but the two
+    // weekly rests are pinned on Saturday+Sunday (ward rule).
+    assert.equal(bctx.pinned[0][0], null, 'Wed 1 Jan free');
+    assert.equal(bctx.pinned[0][1], null, 'Thu 2 Jan free');
+    assert.equal(bctx.pinned[0][3], 'R', 'Sat 4 Jan pinned R');
+    assert.equal(bctx.pinned[0][4], 'R', 'Sun 5 Jan pinned R');
+    assert.equal(bctx.pinned[1][3], null, 'free-profile nurse not pinned');
   });
 
   it('should set diurniNoNotti property for diurni_no_notti nurses', () => {

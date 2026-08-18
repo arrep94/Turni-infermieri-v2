@@ -554,6 +554,11 @@ function getPatternFamilies(ctx, n) {
 
   if (isMPCycleLimitedNurse(props)) {
     for (const pattern of getAllowedMPCyclePatterns(props)) add('mp-cycle', pattern);
+    // Mixed fortnights: alternate an M-heavy and a P-heavy week so the same
+    // nurse contributes 3M+2P one week and 2M+3P the next (afternoons are the
+    // heavier shift and morning coverage is usually helped by solo_mattine).
+    add('mp-cycle-alt-mp', ['M', 'M', 'M', 'P', 'P', 'R', 'R', 'M', 'M', 'P', 'P', 'P', 'R', 'R']);
+    add('mp-cycle-alt-pm', ['M', 'M', 'P', 'P', 'P', 'R', 'R', 'M', 'M', 'M', 'P', 'P', 'R', 'R']);
     return families;
   }
 
@@ -750,7 +755,7 @@ function patternRowHardCost(row, ctx, n) {
     if (hasForbiddenExtraNightRest(tmpSchedule, ctx, n, d)) hard += 30;
   }
   if (isMPCycleLimitedNurse(props)) {
-    hard += getMPCyclePlan(tmpSchedule, n, ctx.numDays, props, getPrevTailShift(ctx, n)).mismatch * 40;
+    hard += getMPCyclePlan(tmpSchedule, n, ctx.numDays, props, getPrevTailShift(ctx, n), ctx.dows).mismatch * 40;
   }
   return hard;
 }

@@ -146,6 +146,10 @@ function buildContext(config) {
         else pinned[n][d] = 'R';
       } else if (nurseProps[n].soloMattine) {
         pinned[n][d] = dows[d] === 0 || dows[d] === 6 ? 'R' : 'M';
+      } else if (nurseProps[n].mattineEPomeriggi || (nurseProps[n].noNotti && nurseProps[n].noDiurni)) {
+        // M/P matrix (5 work + 2 adjacent rests): the rests are FIXED on
+        // Saturday+Sunday (ward rule) - work days stay free for the M/P mix.
+        if (dows[d] === 0 || dows[d] === 6) pinned[n][d] = 'R';
       }
     }
   }
