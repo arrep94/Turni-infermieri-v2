@@ -423,6 +423,53 @@ describe('coperture consigliate (suggestCoverage)', () => {
   });
 });
 
+describe('coperture consigliate per la matrice M/P/N (riposi solo dopo lo smonto)', () => {
+  function wardState(currentState, year, month) {
+    const nurses = [];
+    for (let i = 0; i < 33; i++) {
+      let tags = ['no_diurni'];
+      if (i === 0) tags = ['solo_mattine'];
+      if (i === 4) tags = ['no_notti', 'mattine_e_pomeriggi'];
+      if (i === 9) tags = ['no_diurni', 'quattro_mattine_venerdi_notte'];
+      nurses.push({ id: 'w' + i, name: 'W ' + i, tags, absencePeriods: {} });
+    }
+    return {
+      ...currentState,
+      year,
+      month,
+      totalNurses: 33,
+      absentNurses: 0,
+      nurses,
+      rules: { ...currentState.rules, fasciaOraria: '7-10', maxNights: 5, hardMaxNights: 6, targetHours: 36 },
+    };
+  }
+
+  it('gennaio 2027 (21 feriali): N 5-6, M/P 7-8, niente diurni', () => {
+    const currentState = toPlain(ctx._getAppState());
+    ctx._setAppState(wardState(currentState, 2027, 0));
+    const { suggestion } = toPlain(ctx.suggestCoverage());
+    assert.equal(suggestion.minCoverageN, 5);
+    assert.equal(suggestion.maxCoverageN, 6);
+    assert.equal(suggestion.minCoverageM, 7);
+    assert.equal(suggestion.maxCoverageM, 8);
+    assert.equal(suggestion.minCoverageP, 7);
+    assert.equal(suggestion.maxCoverageP, 8);
+    assert.equal(suggestion.maxCoverageD, 0);
+    ctx._setAppState(currentState);
+  });
+
+  it('aprile 2027 (22 feriali): le ore in più vanno su M/P (8-9)', () => {
+    const currentState = toPlain(ctx._getAppState());
+    ctx._setAppState(wardState(currentState, 2027, 3));
+    const { suggestion, mpnNote } = toPlain(ctx.suggestCoverage());
+    assert.equal(suggestion.minCoverageN, 5);
+    assert.equal(suggestion.minCoverageM, 8);
+    assert.equal(suggestion.maxCoverageM, 9);
+    assert.match(mpnNote, /monte ore/);
+    ctx._setAppState(currentState);
+  });
+});
+
 describe('manual fixed-pattern protections', () => {
   it('should allow manual edits on the 4 mattine + notte ven. nurse', () => {
     const currentState = toPlain(ctx._getAppState());

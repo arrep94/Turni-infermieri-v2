@@ -146,6 +146,25 @@ async function solve(config, numSolutions, timeBudget, untilZeroViolations, solv
       // Each solution runs under its own seeded RNG so multi-solution batches
       // are genuinely diverse AND reproducible (the seed used to be log-only).
       const generateOne = () => {
+        // Matrix generator ('matrix', and the engine behind 'auto'): exact
+        // per-nurse rows on the profile grammar + coverage coordination. If it
+        // ever throws, 'auto' falls back to the legacy portfolio below.
+        if ((solverChoice === 'matrix' || solverChoice === 'auto') && !solved) {
+          progress(pctBase, `${batchLabel}Generatore a matrici: soluzione ${i + 1}/${numSolutions}…`);
+          try {
+            const result = solveMatrix(config, perSolutionBudgetSec, frac =>
+              progress(
+                pctBase + Math.floor((frac * 80) / numSolutions),
+                `${batchLabel}Generatore a matrici: soluzione ${i + 1}/${numSolutions}…`
+              )
+            );
+            batchSolutions.push({ ...result, solverMethod: 'matrix' });
+            solved = true;
+          } catch (err) {
+            console.warn('[Solver] Generatore a matrici fallito, uso il portfolio:', err && err.message);
+          }
+        }
+
         // Night-only manual mode: cover nights + fixed nurses, leave M/P blank
         if (solverChoice === 'night_only' && !solved) {
           progress(pctBase, `${batchLabel}Solo notti: copertura notturna (mattine/pomeriggi manuali)…`);
@@ -266,8 +285,8 @@ async function solve(config, numSolutions, timeBudget, untilZeroViolations, solv
     progress(5, 'Night-first Pattern Beam selezionato manualmente…');
   } else if (solverChoice === 'night_only') {
     progress(5, 'Modalità solo notti: copertura notturna, mattine/pomeriggi manuali…');
-  } else if (solverChoice === 'auto') {
-    progress(5, `Auto (night-first Pattern Beam + euristica, vince la migliore): ${numSolutions} soluzioni…`);
+  } else if (solverChoice === 'auto' || solverChoice === 'matrix') {
+    progress(5, `Generatore a matrici: ${numSolutions} soluzioni…`);
   } else {
     progress(5, `Euristica (greedy + simulated annealing): ${numSolutions} soluzioni…`);
   }

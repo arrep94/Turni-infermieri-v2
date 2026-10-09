@@ -14,7 +14,7 @@ solver nei log runtime via `/api/log`).
 ## Funzionalita
 
 - **Wizard a 5 step** — Organico → Regole → Continuità → Genera → Risultati
-- **Motore di scheduling** — Pattern Beam a cicli profilo + euristica greedy con simulated annealing e riparazioni mirate (portfolio adattivo in modalità Auto)
+- **Motore di scheduling** — **Generatore a matrici** (default di Auto): ogni riga è costruita con programmazione dinamica esatta sulla matrice del profilo (riposi solo dopo lo smonto, D-N-S-R-R, 5+2) con ore e notti come vincoli, poi le righe vengono coordinate sulle coperture. Restano disponibili Pattern Beam ed euristica greedy + simulated annealing per confronto
 - **Matrici rigide** — M/P 5 lavoro + 2 riposi adiacenti (fasi coordinate di gruppo), D-N-S-R-R
 - **Prepara mese successivo** — la griglia generata diventa automaticamente continuità, riporto ore ed equità del mese dopo
 - **Equità di lungo periodo** — notti e festivi lavorati si bilanciano tra un mese e l'altro
@@ -72,8 +72,8 @@ js/
     construct.js            Greedy construction heuristic (8 phases)
     local-search.js         Simulated annealing + move functions
     pattern-planner.js       Pattern Beam and night-first cyclic profile planners
-    lp-model.js             MILP LP formulation, solution parsers
-    solvers.js              HiGHS/GLPK loaders, solve orchestration
+    matrix-solver.js        Generatore a matrici: exact row DP + coverage coordination
+    solvers.js              Solve orchestration (auto = matrix generator)
 css/
   custom.css                Styles with CSS variables for light/dark themes
 test/
@@ -107,17 +107,15 @@ The solver modules share scope via `importScripts()` — no module system needed
 
 ## Scheduling Engine
 
-The solver runs in a **Web Worker** and uses a triple-strategy approach:
+The solver runs in a **Web Worker**:
 
-1. **HiGHS MILP** (primary) — Mathematical optimization via WASM. Binary decision variables, hard constraints, fairness objective with multiple seeds.
+1. **Generatore a matrici** (default, `auto`/`matrix`) — every nurse row is the exact optimum of a dynamic program over the GRAMMAR of the nurse's matrix (M/P/N: `W^k-N-S-R(-R)` with rests only after the smonto and at most `maxRPerWeek` per week; D/N: `D-N-S-R-R` + one doppio D; weekday M/P 5+2), with monthly hours and nights as DP resources. Rows are coordinated by block coordinate descent on convex coverage costs plus ruin-and-recreate kicks. Rest islands and broken matrices are impossible by construction; nobody goes under the monte ore unless the matrix makes it arithmetically impossible.
 
-2. **GLPK.js** (secondary) — Alternative MILP solver. Same LP formulation, JavaScript implementation.
+2. **Night-first Pattern Beam** (optional) — Pattern Beam variant that commits night-capable rows before non-night rows so N coverage has priority.
 
-3. **Night-first Pattern Beam** (optional) — Pattern Beam variant that commits night-capable rows before non-night rows so N coverage has priority.
+3. **Pattern Beam** (optional) — Profile-aware cyclic planner that selects whole-month nurse rows with beam search and shared repair passes.
 
-4. **Pattern Beam** (optional) — Profile-aware cyclic planner that selects whole-month nurse rows with beam search and shared repair passes.
-
-5. **Greedy + Simulated Annealing** (fallback) — Multi-restart construction heuristic with local search. Always available, works offline.
+4. **Greedy + Simulated Annealing** (fallback) — Multi-restart construction heuristic with local search. Always available, works offline.
 
 ### Hard Constraints
 - Daily coverage min/max per shift type (M, P, D, N)

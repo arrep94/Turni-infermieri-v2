@@ -86,6 +86,15 @@ const WEEKLY_REST_ABSENCE_SHIFTS = new Set(['F', 'MA', 'L104', 'PR', 'MT', 'CP',
  */
 function weeklyRestNeed(schedule, ctx, n, wDays) {
   const props = ctx.nurseProps[n];
+  // M/P/N matrix (W-N-S-R blocks, and the fixed M-M-M-M-N-S-R of the
+  // quattro mattine + venerdì notte profile): rests come only from the night blocks, at
+  // most maxRPerWeek a week — the minimum is one rest per complete week
+  // without absences (partial boundary weeks are calendar artifacts).
+  if (isRestrictedNoDiurniNightNurse(props) || props.quattroMattineVenerdiNotte) {
+    if (wDays.length < 7) return 0;
+    for (const d of wDays) if (WEEKLY_REST_ABSENCE_SHIFTS.has(schedule[n][d])) return 0;
+    return Math.min(1, ctx.minRPerWeek);
+  }
   if (
     wDays.length < 7 &&
     (isMPCycleLimitedNurse(props) || props.diurniENotturni || props.soloMattine || props.quattroMattineVenerdiNotte)
@@ -234,6 +243,27 @@ function isForbiddenRestrictedNoDiurniRestDay(schedule, ctx, nurseIdx, dayIdx) {
   if (!isRestrictedNoDiurniNightNurse(props)) return false;
   if (getShiftAt(schedule, ctx, nurseIdx, dayIdx) !== 'R') return false;
   return !canAssignRestrictedNoDiurniRest(schedule, ctx, nurseIdx, dayIdx);
+}
+
+// An R of an M/P/N matrix nurse that does not come from a night block (not
+// right after the smonto, not the second R of N-S-R-R): the "isola di riposo"
+// the ward forbids. Pinned cells (desiderate, continuity) and the first days
+// of a month without continuity (unknowable previous block) are exempt.
+function isRestOutsideMPNMatrix(schedule, ctx, n, d) {
+  if (!isRestrictedNoDiurniNightNurse(ctx.nurseProps[n])) return false;
+  if (schedule[n][d] !== 'R') return false;
+  if (ctx.pinned && ctx.pinned[n] && ctx.pinned[n][d]) return false;
+  const hasTail = !!(ctx.prevTail && ctx.prevTail[n] && ctx.prevTail[n].length);
+  if (!hasTail && (d === 0 || (d === 1 && schedule[n][0] === 'R'))) return false;
+  return !canAssignRestrictedNoDiurniRest(schedule, ctx, n, d);
+}
+
+// Rests of a week that count toward the M/P/N weekly cap (requested/pinned
+// rests excluded).
+function countMatrixWeekRest(schedule, ctx, n, wDays) {
+  let c = 0;
+  for (const d of wDays) if (schedule[n][d] === 'R' && !(ctx.pinned && ctx.pinned[n][d])) c++;
+  return c;
 }
 
 function isWorkShift(shift) {
@@ -833,11 +863,16 @@ function computeScore(schedule, ctx) {
     }
   }
 
-  // Soft: for M/P/N-only nurses, keep discretionary rests attached to the
-  // post-night recovery block instead of scattering them across the month.
+  // Hard: M/P/N matrix nurses rest ONLY after the smonto (N-S-R / N-S-R-R)
+  // and at most maxRPerWeek times per calendar week.
   for (let n = 0; n < numNurses; n++) {
+    if (!isRestrictedNoDiurniNightNurse(nurseProps[n])) continue;
     for (let d = 0; d < numDays; d++) {
-      if (isForbiddenRestrictedNoDiurniRestDay(schedule, ctx, n, d)) soft += 6;
+      if (isRestOutsideMPNMatrix(schedule, ctx, n, d)) hard++;
+    }
+    for (const wDays of weekDaysList) {
+      const have = countMatrixWeekRest(schedule, ctx, n, wDays);
+      if (have > ctx.maxRPerWeek) hard += have - ctx.maxRPerWeek;
     }
   }
 
@@ -862,7 +897,7 @@ function computeScore(schedule, ctx) {
     for (let n = 0; n < numNurses; n++) {
       const hasAbsence = schedule[n].some(s => absShifts.includes(s));
       const isFullyAbsent = hasAbsence && schedule[n].every(s => absShifts.includes(s) || s === 'R');
-      if (ctx.minMonthlyHours > 0 && !isFullyAbsent && hours[n] < ctx.minMonthlyHours) hard++;
+      if (ctx.minMonthlyHours > 0 && !isFullyAbsent && hours[n] < ctx.minMonthlyHours - 0.01) hard++;
       let workedHours = hours[n];
       if (hasAbsence) {
         workedHours = 0;
@@ -870,7 +905,7 @@ function computeScore(schedule, ctx) {
           if (!absShifts.includes(schedule[n][d])) workedHours += SHIFT_HOURS[schedule[n][d]] || 0;
         }
       }
-      if (workedHours > ctx.maxMonthlyHours) hard++;
+      if (workedHours > ctx.maxMonthlyHours + 0.01) hard++;
     }
   }
 
@@ -899,6 +934,8 @@ function computeScore(schedule, ctx) {
   // its maximum) the surplus rest is structural over-staffing, soft only.
   if (minRPerWeek > 0) {
     for (let n = 0; n < numNurses; n++) {
+      // M/P/N matrix nurses: weekly cap handled above (maxRPerWeek).
+      if (isRestrictedNoDiurniNightNurse(nurseProps[n])) continue;
       const exemptBlockRests = needsSecondNightRest(nurseProps[n]);
       const mpMatrixExcess = isMPCycleLimitedNurse(nurseProps[n]);
       for (const wDays of weekDaysList) {
@@ -911,7 +948,9 @@ function computeScore(schedule, ctx) {
         let hasSpareDay = false;
         for (const d of wDays) {
           if (schedule[n][d] !== 'R') continue;
-          if (exemptBlockRests && isNightBlockRestDay(schedule, ctx, n, d)) discretionary--;
+          // Pinned rests (fixed profiles, desiderate) are never discretionary.
+          if (ctx.pinned[n][d]) discretionary--;
+          else if (exemptBlockRests && isNightBlockRestDay(schedule, ctx, n, d)) discretionary--;
           else if (nurseHasSpareCapacityOn(covByDay[d], ctx, nurseProps[n])) hasSpareDay = true;
         }
         if (discretionary > need + 1 && hasSpareDay) hard += discretionary - need - 1;
@@ -1162,6 +1201,7 @@ function collectViolations(schedule, ctx) {
     for (let n = 0; n < numNurses; n++) {
       const exemptBlockRests = needsSecondNightRest(nurseProps[n]);
       const mpMatrix = isMPCycleLimitedNurse(nurseProps[n]);
+      const mpnMatrix = isRestrictedNoDiurniNightNurse(nurseProps[n]);
       for (let w = 0; w < weekDaysList.length; w++) {
         const wDays = weekDaysList[w];
         // Deficit: matrix-, absence- and doppio-D-aware requirement (mirror of
@@ -1180,12 +1220,25 @@ function collectViolations(schedule, ctx) {
         // diurni_e_notturni, exempt partial boundary weeks for rigid-matrix
         // M/P nurses, and count only rests the nurse could have avoided
         // (tag-aware spare capacity).
+        if (mpnMatrix) {
+          const capped = countMatrixWeekRest(schedule, ctx, n, wDays);
+          if (capped > ctx.maxRPerWeek)
+            violations.push({
+              nurse: n,
+              week: w,
+              type: 'troppi_riposi_settimana',
+              msg: `Infermiere ${n + 1}, settimana ${w + 1}: ${capped} riposi (massimo ${ctx.maxRPerWeek})`,
+            });
+          continue;
+        }
         if (mpMatrix && wDays.length < 7) continue;
         let discretionary = have;
         let hasSpareDay = false;
         for (const d of wDays) {
           if (schedule[n][d] !== 'R') continue;
-          if (exemptBlockRests && isNightBlockRestDay(schedule, ctx, n, d)) discretionary--;
+          // Pinned rests (fixed profiles, desiderate) are never discretionary.
+          if (ctx.pinned[n][d]) discretionary--;
+          else if (exemptBlockRests && isNightBlockRestDay(schedule, ctx, n, d)) discretionary--;
           else if (nurseHasSpareCapacityOn(covByDay[d], ctx, nurseProps[n])) hasSpareDay = true;
         }
         if (discretionary > need + 1 && hasSpareDay)
@@ -1224,7 +1277,7 @@ function collectViolations(schedule, ctx) {
       const h = nurseHours(schedule, n, numDays);
       const hasAbsence = schedule[n].some(s => absShiftsV.includes(s));
       const isFullyAbsent = hasAbsence && schedule[n].every(s => absShiftsV.includes(s) || s === 'R');
-      if (ctx.minMonthlyHours > 0 && !isFullyAbsent && h < ctx.minMonthlyHours) {
+      if (ctx.minMonthlyHours > 0 && !isFullyAbsent && h < ctx.minMonthlyHours - 0.01) {
         violations.push({
           type: 'low_hours',
           nurse: n,
@@ -1241,7 +1294,7 @@ function collectViolations(schedule, ctx) {
           if (!absShiftsV.includes(schedule[n][d])) workedHours += SHIFT_HOURS[schedule[n][d]] || 0;
         }
       }
-      if (workedHours > ctx.maxMonthlyHours) {
+      if (workedHours > ctx.maxMonthlyHours + 0.01) {
         violations.push({
           type: 'high_hours',
           nurse: n,
@@ -1260,6 +1313,20 @@ function collectViolations(schedule, ctx) {
           });
         }
       }
+    }
+  }
+
+  // M/P/N matrix: a rest that does not follow the smonto is a rest island.
+  for (let n = 0; n < numNurses; n++) {
+    if (!isRestrictedNoDiurniNightNurse(nurseProps[n])) continue;
+    for (let d = 0; d < numDays; d++) {
+      if (!isRestOutsideMPNMatrix(schedule, ctx, n, d)) continue;
+      violations.push({
+        type: 'riposo_fuori_matrice',
+        nurse: n,
+        day: d,
+        msg: `${ctx.nurses[n].name}, giorno ${d + 1}: riposo non preceduto dallo smonto (isola di riposo)`,
+      });
     }
   }
 

@@ -82,6 +82,10 @@ const solverSharedGlobals = {
   solveFillMP: 'writable',
   constructPatternSchedule: 'writable',
   constructNightFirstPatternSchedule: 'writable',
+  // matrix-solver.js
+  solveMatrix: 'writable',
+  isRestOutsideMPNMatrix: 'writable',
+  countMatrixWeekRest: 'writable',
   // solvers.js
   solveFallback: 'writable',
   solve: 'writable',

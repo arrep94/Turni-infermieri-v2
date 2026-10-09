@@ -13,7 +13,7 @@ reperibile-diurno repair, long-term night/festivi equity carryover (`equityCarry
 `ctx.nightCarryover`/`ctx.festiviCarryover`), adaptive auto portfolio, property-based tests
 (`test/property.test.js`).
 
-It is a browser-only Italian-language web application for scheduling nurse shifts in an emergency room. It solves the Nurse Scheduling Problem (NSP) with a cyclic Pattern Beam planner plus a greedy + simulated-annealing heuristic (the earlier MILP back-ends HiGHS/GLPK were removed — they were never the ones producing the schedules).
+It is a browser-only Italian-language web application for scheduling nurse shifts in an emergency room. It solves the Nurse Scheduling Problem (NSP) with the **Generatore a matrici** (`js/solver/matrix-solver.js`, default of `auto` since 09/10/2026): an exact per-nurse dynamic program over the matrix grammar of each profile, with hours/nights as DP resources, coordinated across nurses by block coordinate descent + ruin-and-recreate. The older cyclic Pattern Beam planner and greedy + simulated-annealing heuristic remain selectable (the MILP back-ends HiGHS/GLPK were removed long ago).
 
 Zero dependencies. No server. No build step. Open `index.html` in a browser and it works.
 
@@ -60,7 +60,8 @@ npm run validate       # Run lint + format check + tests (all-in-one)
 │       ├── construct.js    # Greedy construction heuristic (night blocks, M/P cycles, coverage)
 │       ├── local-search.js # Simulated annealing (6 moves) + 9 targeted repair passes
 │       ├── pattern-planner.js # Cyclic Pattern Beam planner (pattern/night-first/night-only/fill-MP)
-│       └── solvers.js      # Solve orchestration: auto portfolio + heuristic fallback
+│       ├── matrix-solver.js # Generatore a matrici (exact row DP + coverage coordination) — default
+│       └── solvers.js      # Solve orchestration: auto = matrix generator (legacy portfolio as fallback)
 ├── css/
 │   └── custom.css          # Styles, dark mode vars, print styles
 ├── test/                   # Node.js test files (node --test)
@@ -161,6 +162,7 @@ Absence tags (with date ranges via `absencePeriods`):
 - Forbidden transitions: P->M, P->D (unless relaxed), D->M, D->P, D->D (unless relaxed), N->S mandatory, S->R mandatory
 - Night block: N->S->R for every profile; the second R is optional EXCEPT for `diurni_e_notturni`, whose rigid matrix is **D-N-S-R-R** (second R mandatory, third rest forbidden, D lead-in right before N)
 - M/P weekly matrix: `mattine_e_pomeriggi` and `no_notti + no_diurni` nurses follow rigid **5 work + 2 consecutive rest** 7-day cycles (`MP_CYCLE_PATTERNS`), with a free phase offset at month start so rests stagger between nurses
+- **M/P/N matrix** (`no_diurni` rotating nurses, `isRestrictedNoDiurniNightNurse`): row = blocks `W^k N S R (R)` with W = M/P (no P→M), 2 ≤ k ≤ `maxSequenzaLavoro` (default 5); rests ONLY after the smonto (`isRestOutsideMPNMatrix` → hard violation `riposo_fuori_matrice`), at most `maxRPerWeek` (default 2) non-pinned R per calendar week (`troppi_riposi_settimana`), weekly MINIMUM is 1 R per complete week without absences (`weeklyRestNeed`, also for `quattro_mattine_venerdi_notte`). Ward request of 09/10/2026: the old "minimum 2 R/week" made the solvers scatter rest islands
 - 11-hour minimum gap between shifts
 - Weekly rest minimums (default: 2 R per week; partial boundary weeks are exempt for rigid-matrix M/P nurses; mandatory D/N block rests never count as weekly excess)
 - Night shift caps per nurse (soft `maxNights`, absolute `hardMaxNights`)
@@ -242,7 +244,16 @@ The solver is split into 7 modules under `js/solver/` loaded via `importScripts(
 | `pattern-planner.js` | Pattern Beam (`solvePattern`), night-first (`solveNightFirstPattern`), night-only + fill-MP modes, cycle families (`getPatternFamilies`) |
 | `solvers.js` | `solve()` orchestration (auto portfolio), `solveFallback()` (restarts + ILS kicks) |
 
-- `solverChoice` values: `'auto' | 'pattern' | 'night_first_pattern' | 'night_only' | 'fallback'` (legacy `'milp'`/`'glpk'` are normalised to the heuristic)
+- `solverChoice` values: `'auto' | 'matrix' | 'pattern' | 'night_first_pattern' | 'night_only' | 'fallback'` (`auto` = matrix generator, falling back to the legacy portfolio only if it throws; legacy `'milp'`/`'glpk'` are normalised to `auto`)
+
+### Generatore a matrici (matrix-solver.js)
+
+- One finite automaton per profile (`mxModelMPN`, `mxModelDN`, `mxModelMP`, `mxModelGeneric`; fully pinned rows are `fixed`). States × resources (M/P count, nights, diurni, weekly rests) form the DP state; `mxSolveRow` returns the exact best row given per-day marginal coverage costs (`mxMarginals`) and a terminal cost (`mxTerminalCost`: hours ≥ max(personal monte ore, monthly minimum), nights fairness/caps).
+- Convex coverage cost `mxCovCost` (under-min ≫ over-max ≫ even fill toward max). `solveMatrix` = sequential construction → descent sweeps (a row change is kept only if the true objective does not worsen) → ruin-and-recreate kicks (every other kick rebuilds the most-nights + fewest-nights nurses together). Seeded by `withSeededRandom`.
+- Free phase without continuity: M/P/N may start inside a stretch (night on day 1-2 allowed); D/N free starts inside a night block cannot host the doppio D (`NF/SF/R1F`), and a doppio D can never be truncated at month end (`badFinal`).
+- Absences cannot start right after N or S (`absFrom`); pinned rests (desiderate) restart the matrix for free, any other unreachable pin costs `MX_WEIGHTS.override`.
+- `coppiaTurni`: the pair is one unit (coverage multiplicity 2), the follower copies the leader outside its own pinned days.
+- Arithmetic of the ward (expert analysis 09/10/2026, 33 nurses, 30 rotating): days = W + 3n + RR, hours = 7.2·W + hN·n ≥ monte → structural night cap n ≤ (7.2·days − monte)/(21.6 − hN). In 22-23 weekday months the extra hours can only go on M/P (coverage 8-10), and N = 5 every night has zero slack. `suggestCoverage` in app.js uses the same arithmetic (`rot` counter, `mpnNote`).
 - All strategies share: `buildContext()`, `computeScore()`, `collectViolations()`, `computeStats()`, `localSearch()`
 - All modules share scope via `importScripts()` — functions from any module are available to all (register new shared names in `eslint.config.js` `solverSharedGlobals`)
 - Test changes with `npm test` and `npm run benchmark:accuracy`, then by generating schedules and checking violation counts in the UI

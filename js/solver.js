@@ -63,6 +63,7 @@ importScripts(
   'solver/construct.js',
   'solver/local-search.js',
   'solver/pattern-planner.js',
+  'solver/matrix-solver.js',
   'solver/solvers.js'
 );
 

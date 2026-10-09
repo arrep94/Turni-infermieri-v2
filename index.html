@@ -597,16 +597,51 @@
 
               <div class="flex items-center justify-between gap-3">
                 <div>
-                  <p class="text-sm font-medium">Minimo 2 riposi reali a settimana</p>
+                  <p class="text-sm font-medium">Riposi settimanali minimi</p>
                   <p class="text-xs text-gray-500 dark:text-slate-400">
-                    S (smonto) non conta come riposo. I riposi delle matrici (5+2 e D-N-S-R-R) soddisfano già questo
-                    minimo: il vincolo copre gli infermieri fuori matrice.
+                    S (smonto) non conta come riposo. Turnisti M/P/N: almeno 1 riposo per settimana piena, sempre dopo
+                    lo smonto. Profili fuori matrice: almeno 2. Le matrici 5+2 e D-N-S-R-R li garantiscono già.
                   </p>
                 </div>
                 <label class="toggle-switch flex-shrink-0">
                   <input id="tog-min-r-week" type="checkbox" />
                   <span class="toggle-slider"></span>
                 </label>
+              </div>
+
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <p class="text-sm font-medium">Matrice M/P/N: riposi massimi a settimana</p>
+                  <p class="text-xs text-gray-500 dark:text-slate-400">
+                    I riposi dei turnisti M/P/N stanno solo dopo lo smonto (N-S-R o N-S-R-R): niente isole di riposo.
+                  </p>
+                </div>
+                <select
+                  id="sel-max-r-week"
+                  class="px-2 py-1 border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded-lg text-sm"
+                >
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                </select>
+              </div>
+
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <p class="text-sm font-medium">Matrice M/P/N: giorni M/P massimi prima della notte</p>
+                  <p class="text-xs text-gray-500 dark:text-slate-400">
+                    Lunghezza massima della sequenza di mattine/pomeriggi tra un riposo e la notte (minimo 2).
+                  </p>
+                </div>
+                <select
+                  id="sel-max-sequenza"
+                  class="px-2 py-1 border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded-lg text-sm"
+                >
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                  <option value="6">6</option>
+                </select>
               </div>
 
               <div class="flex items-center justify-between gap-3">
@@ -903,14 +938,16 @@
           <div class="rule-card mb-6 text-left">
             <h3 class="font-semibold mb-2 text-sm">🔧 Algoritmo di risoluzione</h3>
             <p class="text-xs text-gray-500 dark:text-slate-400 mb-3">
-              Scegli quale algoritmo utilizzare. «Auto» usa l'euristica (greedy + simulated annealing). Puoi forzare un
-              algoritmo specifico, incluso Pattern Beam, per confrontare i risultati.
+              «Auto» usa il Generatore a matrici: ogni riga è costruita in modo esatto sulla matrice del profilo (niente
+              isole di riposo, riposi solo dopo lo smonto) con le ore del mese come vincolo, poi le righe vengono
+              coordinate per coprire i turni. Gli altri algoritmi restano disponibili per confronto.
             </p>
             <select
               id="sel-solver-method"
               class="w-full px-3 py-2 border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
-              <option value="auto">Auto (migliore tra Pattern notti-prima ed Euristica)</option>
+              <option value="auto">Auto (Generatore a matrici)</option>
+              <option value="matrix">Generatore a matrici (righe esatte + coordinamento coperture)</option>
               <option value="night_first_pattern">Night-first Pattern Beam (prima notti, poi cicli)</option>
               <option value="night_only">Solo notti (mattine/pomeriggi a mano)</option>
               <option value="pattern">Pattern Beam (cicli profilo + ricerca a fascio)</option>

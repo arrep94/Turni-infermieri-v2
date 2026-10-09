@@ -345,6 +345,8 @@ const DEFAULT_RULES = {
   hardMaxNights: 7,
   minGap11h: true,
   minRPerWeek: 2,
+  maxRPerWeek: 2, // M/P/N matrix: rests only after the smonto, at most this many per week
+  maxSequenzaLavoro: 5, // M/P/N matrix: longest M/P stretch before a night
   preferDiurni: false,
   // New flags
   coppiaTurni: null, // Array of 2 nurse indices [n1, n2] to have same shifts, or null
@@ -496,7 +498,7 @@ let state = {
   solverProgress: { percent: 0, message: '' },
   numSolutions: 3,
   timeBudget: 0, // 0 = auto (inferred from constraints); >0 = user-chosen seconds; -1 = until zero violations
-  solverChoice: 'auto', // 'auto'|'pattern'|'night_first_pattern'|'night_only'|'fallback'
+  solverChoice: 'auto', // 'auto'|'matrix'|'pattern'|'night_first_pattern'|'night_only'|'fallback'
   worker: null,
   darkMode: false,
   previousMonthSchedule: null, // 2D array [nurse][day] of shift codes from prev month
@@ -1312,6 +1314,7 @@ function suggestCoverage() {
     mp = 0,
     dnn = 0,
     freeMP = 0,
+    rot = 0,
     flex = 0;
   present.forEach(nurse => {
     if (has(nurse, 'diurni_e_notturni')) dn++;
@@ -1322,6 +1325,7 @@ function suggestCoverage() {
     else if (has(nurse, 'mattine_e_pomeriggi') || (has(nurse, 'no_notti') && has(nurse, 'no_diurni'))) mp++;
     else if (has(nurse, 'diurni_no_notti')) dnn++;
     else if (has(nurse, 'no_notti')) freeMP++;
+    else if (has(nurse, 'no_diurni')) rot++;
     else flex++;
   });
 
@@ -1348,12 +1352,59 @@ function suggestCoverage() {
     minCoverageP: cap(Math.floor(mpWeekend)),
     maxCoverageP: cap(Math.ceil(pWeekday) + 1),
   };
+  // M/P/N rotating nurses (matrix W-N-S-R): rests only after the smonto and
+  // never under the monte ore, so their monthly workload is fixed by
+  // arithmetic: days = W + 3n + RR, hours = 7.2·W + hN·n ≥ monte ore.
+  // The structural night cap is n ≤ (7.2·days − monte) / (21.6 − hN); the
+  // remaining hours MUST go to mornings/afternoons. Coverage follows from it.
+  let mpnNote = '';
+  if (rot > 0) {
+    const fascia = resolveFasciaOraria(state.rules.fasciaOraria);
+    const hN = FASCIA_PRESETS[fascia].N;
+    const hMP = FASCIA_PRESETS[fascia].M;
+    const target = getMonthlyTargetHours(state.year, state.month);
+    const nMax = Math.max(0, Math.floor((hMP * numDays - target) / (3 * hMP - hN)));
+    const nLow = Math.min(nMax, state.rules.maxNights ?? 5);
+    const nHigh = Math.min(nMax, state.rules.hardMaxNights ?? 6);
+    let fridays = 0;
+    let monThu = 0;
+    let weekdays = 0;
+    for (let day = 1; day <= numDays; day++) {
+      const dow = new Date(state.year, state.month, day).getDay();
+      if (dow === 5) fridays++;
+      if (dow >= 1 && dow <= 4) monThu++;
+      if (dow >= 1 && dow <= 5) weekdays++;
+    }
+    const otherN = dn / 5 + sn / 3 + (qmv * fridays) / numDays + flex / 6;
+    const nLowSupply = (rot * nLow) / numDays + otherN;
+    const nHighSupply = (rot * nHigh) / numDays + otherN;
+    const workMP = Math.ceil((target - hN * nLow) / hMP - 1e-9);
+    const mpPerDay = (rot * workMP + (sm + mp) * weekdays + qmv * monThu) / numDays + flexMP + dSupply;
+    const each = mpPerDay / 2;
+    const capMP = v => Math.max(0, Math.min(10, v));
+    suggestion.minCoverageN = cap(Math.floor(nLowSupply + 0.05));
+    suggestion.maxCoverageN = cap(Math.max(suggestion.minCoverageN + 1, Math.ceil(nHighSupply - 0.05)));
+    suggestion.minCoverageM = capMP(Math.floor(each));
+    suggestion.minCoverageP = capMP(Math.floor(each));
+    suggestion.maxCoverageM = capMP(Math.max(Math.ceil(each), suggestion.minCoverageM + 1));
+    suggestion.maxCoverageP = capMP(Math.max(Math.ceil(each), suggestion.minCoverageP + 1));
+    if (dSupply === 0) {
+      suggestion.minCoverageD = 0;
+      suggestion.maxCoverageD = 0;
+    }
+    mpnNote =
+      `Turnisti M/P/N: ${rot} con riposi solo dopo lo smonto. Monte ore ${target.toFixed(2)}h → ` +
+      `${nLow} notti e ${workMP} M/P a testa (massimo strutturale ${nMax} notti).` +
+      (suggestion.maxCoverageM > COVERAGE_CAP
+        ? ` Questo mese le ore in più vanno per forza su mattine/pomeriggi: oltre ${COVERAGE_CAP} non è un errore, è il monte ore.`
+        : '');
+  }
   // Guards: max ≥ min everywhere
   suggestion.maxCoverageN = Math.max(suggestion.maxCoverageN, suggestion.minCoverageN);
   suggestion.maxCoverageD = Math.max(suggestion.maxCoverageD, suggestion.minCoverageD);
   suggestion.maxCoverageM = Math.max(suggestion.maxCoverageM, suggestion.minCoverageM);
   suggestion.maxCoverageP = Math.max(suggestion.maxCoverageP, suggestion.minCoverageP);
-  return { suggestion, present: present.length, counts: { dn, sn, sd, sm, qmv, mp, dnn, freeMP, flex } };
+  return { suggestion, present: present.length, counts: { dn, sn, sd, sm, qmv, mp, dnn, freeMP, rot, flex }, mpnNote };
 }
 
 function renderCoverageSuggestion() {
@@ -1364,7 +1415,7 @@ function renderCoverageSuggestion() {
     el.innerHTML = '';
     return;
   }
-  const { suggestion, present } = suggestCoverage();
+  const { suggestion, present, mpnNote } = suggestCoverage();
   const r = state.rules;
   const same =
     r.minCoverageM === suggestion.minCoverageM &&
@@ -1384,6 +1435,7 @@ function renderCoverageSuggestion() {
         Notte <strong>${suggestion.minCoverageN}–${suggestion.maxCoverageN}</strong>
       </p>
       <p class="text-xs mt-1 text-sky-600 dark:text-sky-400">Calcolate dalle limitazioni (matrici, assenze del mese) per saturare il monte ore; i massimi lasciano spazio ai turni di recupero.</p>
+      ${mpnNote ? `<p class="text-xs mt-1 text-sky-600 dark:text-sky-400">${escHtml(mpnNote)}</p>` : ''}
       ${
         same
           ? '<p class="text-xs mt-2 font-semibold text-green-600 dark:text-green-400">✅ Già applicate</p>'
@@ -1485,6 +1537,17 @@ function renderStep2() {
     state.rules.minRPerWeek = v ? 2 : 0;
     saveState();
   });
+  const bindRuleSelect = (id, key, fallback) => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    sel.value = String(r[key] ?? fallback);
+    sel.onchange = () => {
+      state.rules[key] = parseInt(sel.value, 10);
+      saveState();
+    };
+  };
+  bindRuleSelect('sel-max-r-week', 'maxRPerWeek', 2);
+  bindRuleSelect('sel-max-sequenza', 'maxSequenzaLavoro', 5);
 
   // New toggles for additional rules
   bindToggle('tog-consente-pom-diurno', r.consentePomeriggioDiurno, v => {
@@ -3207,7 +3270,11 @@ function renderSolverMethodBanner() {
   banner.classList.remove('hidden');
   const fillBtn = document.getElementById('btn-fill-mp');
   if (fillBtn) fillBtn.classList.toggle('hidden', method !== 'night_only');
-  if (method === 'pattern') {
+  if (method === 'matrix') {
+    banner.innerHTML = `<div class="p-3 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-lg">
+      <p class="font-semibold text-emerald-700 dark:text-emerald-400 text-sm">✅ Algoritmo utilizzato: <strong>Generatore a matrici</strong> (ogni riga è una matrice valida per costruzione, ore del mese come vincolo, coperture coordinate tra tutte le righe)</p>
+    </div>`;
+  } else if (method === 'pattern') {
     banner.innerHTML = `<div class="p-3 bg-cyan-50 dark:bg-cyan-950 border border-cyan-300 dark:border-cyan-700 rounded-lg">
       <p class="font-semibold text-cyan-700 dark:text-cyan-400 text-sm">✅ Algoritmo utilizzato: <strong>Pattern Beam</strong> (pianificazione ciclica per profili e copertura)</p>
     </div>`;
@@ -3229,6 +3296,9 @@ function renderSolverMethodBanner() {
 // Human explanations of the solver's violation type codes, shown as tooltip so
 // the coordinator understands WHAT rule broke, not just the internal shorthand.
 const VIOLATION_HINTS = {
+  riposo_fuori_matrice:
+    'Turnista M/P/N con un riposo non preceduto dallo smonto (isola di riposo): i riposi stanno solo dopo N-S.',
+  troppi_riposi_settimana: 'Più riposi in una settimana del massimo configurato in Regole.',
   mp_cycle_5_2: 'La matrice rigida "5 giorni di lavoro + 2 riposi consecutivi" non è rispettata in questo punto.',
   need_2R_after_night: 'La matrice D-N-S-R-R richiede il secondo riposo dopo lo smonto.',
   transition: 'Sequenza di turni vietata dal contratto (es. Pomeriggio seguito da Mattina).',

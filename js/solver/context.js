@@ -89,6 +89,11 @@ function buildContext(config) {
   const hardMaxNights = rules.hardMaxNights ?? rules.maxNights ?? 7;
   const maxNights = Math.min(rules.maxNights ?? 7, hardMaxNights);
   const minRPerWeek = rules.minRPerWeek ?? 2;
+  // M/P/N matrix (no_diurni): rests only after the smonto (N-S-R or N-S-R-R),
+  // at most maxRPerWeek per calendar week, work stretches of 2..maxSequenzaLavoro
+  // M/P days before each night.
+  const maxRPerWeek = rules.maxRPerWeek ?? 2;
+  const maxSequenzaLavoro = rules.maxSequenzaLavoro ?? 5;
 
   // Hour limits: the UI sliders express WEEKLY hours (min/max per settimana).
   // Convert them to monthly thresholds using the number of weekdays in the month
@@ -252,6 +257,8 @@ function buildContext(config) {
     weeklyMinHours,
     weeklyMaxHours,
     minRPerWeek,
+    maxRPerWeek,
+    maxSequenzaLavoro,
     preferDiurni,
     coppiaTurni,
     consenteDoppioDMensile,
