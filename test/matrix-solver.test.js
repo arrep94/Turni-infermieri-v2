@@ -238,7 +238,7 @@ describe('Generatore a matrici', () => {
           `doppia notte fuori dai turnisti: ${row}`
         );
         const after = row.slice(p.index + 2, p.index + 5);
-        assert.equal(after, 'SRR'.slice(0, after.length), `dopo la doppia notte serve S-R-R: ${row}`);
+        assert.equal(after, 'SRR', `la doppia notte chiude S-R-R dentro il mese: ${row}`);
       }
       doubles += pairs.length;
       const h = S.nurseHours(res.schedule, n, ctx.numDays);
@@ -251,6 +251,23 @@ describe('Generatore a matrici', () => {
     const types = new Set(res.violations.map(v => v.type));
     for (const t of ['transition', 'N_no_S', 'mp_night_pattern', 'doppia_notte_multipla', 'doppia_notte_riposi'])
       assert.ok(!types.has(t), `violazione ${t}`);
+  });
+
+  it('fine mese: niente notte o smonto prima delle ferie che iniziano il mese dopo', () => {
+    const cfg = wardConfig(2027, 4, { doppiaNotteMensile: true });
+    // 12 turnisti in ferie dal 1° o dal 2 giugno: maggio deve chiudere senza N→F.
+    for (let i = 10; i < 22; i++) {
+      cfg.nurses[i].tags.push('ferie');
+      cfg.nurses[i].absencePeriods.ferie = { start: i % 2 ? '2027-06-01' : '2027-06-02', end: '2027-06-21' };
+    }
+    const res = S.withSeededRandom(3, () => S.solveMatrix(cfg, 3));
+    for (let i = 10; i < 22; i++) {
+      const row = res.schedule[i];
+      const last = row[row.length - 1];
+      assert.notEqual(last, 'N', `notte il 31 maggio prima delle ferie: ${row.join('')}`);
+      if (i % 2) assert.notEqual(last, 'S', `smonto il 31 maggio prima delle ferie: ${row.join('')}`);
+      else assert.notEqual(row[row.length - 2] + last, 'NN', `doppia notte a cavallo delle ferie: ${row.join('')}`);
+    }
   });
 
   it('senza opzione la doppia notte resta una violazione', () => {

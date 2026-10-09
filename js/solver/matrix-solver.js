@@ -167,6 +167,8 @@ function mxModelMPN(ctx) {
     absFrom,
     resetState: FREE,
     resetKeepsOffset: dn ? base : 0,
+    // The doppia notte must close its S-R-R inside the month.
+    n2State: N2,
     // A new month gives the doppia notte back (see mxReplayTail).
     monthOffset: dn ? base : 0,
     // Free phase without continuity: the stretch may have started in the
@@ -439,7 +441,30 @@ function mxPrepareNurse(ctx, n, model) {
     ctx.minMonthlyHours || 0
   );
   const carry = ctx.nightCarryover ? ctx.nightCarryover[n] || 0 : 0;
-  return { starts, rwStart, pin, absHours, weekCheck, target, carry, props };
+  // Absences in the first days of NEXT month (e.g. ferie starting on the 1st):
+  // the row must not end in a state that forces N/S onto them (N→F, S→F).
+  let badEnd = null;
+  const nm = ctx.month === 11 ? 0 : ctx.month + 1;
+  const ny = ctx.month === 11 ? ctx.year + 1 : ctx.year;
+  let firstAbs = 0;
+  for (let k = 1; k <= 3 && !firstAbs; k++) if (getAbsenceShift(ctx.nurses[n], k, ny, nm)) firstAbs = k;
+  if (firstAbs && model.absFrom) {
+    badEnd = new Uint8Array(model.numStates);
+    for (let st = 0; st < model.numStates; st++) {
+      let reach = new Set([st]);
+      for (let step = 1; step < firstAbs; step++) {
+        const nxt = new Set();
+        for (const s0 of reach)
+          for (let sh = 0; sh < 6; sh++) {
+            const ns = model.next[s0 * 6 + sh];
+            if (ns >= 0 && model.allowed[sh]) nxt.add(ns);
+          }
+        reach = nxt;
+      }
+      badEnd[st] = [...reach].some(s0 => model.absFrom[s0] === 1) ? 0 : 1;
+    }
+  }
+  return { starts, rwStart, pin, absHours, weekCheck, target, carry, props, badEnd };
 }
 
 function mxTerminalCost(ctx, info, a, nn, dd) {
@@ -543,6 +568,7 @@ function mxSolveRow(ctx, model, info, mc, termMult) {
       for (let sh = 0; sh < 6; sh++) {
         if (pin >= 0 && sh !== pin) continue;
         let ns = next[st * 6 + sh];
+        if (ns >= 0 && ns === model.n2State && pin < 0 && d > numDays - 4) continue;
         let cost = c0;
         if (ns < 0 || (pin < 0 && !model.allowed[sh])) {
           if (pin < 0 || !absFrom[st] || (absFrom[st] === 2 && d > 0)) continue;
@@ -587,13 +613,14 @@ function mxSolveRow(ctx, model, info, mc, termMult) {
     const c0 = cur[idx];
     if (c0 >= MX_INF) continue;
     if (model.badFinal && model.badFinal.includes(Math.floor(idx / strideS))) continue;
+    const endPenalty = info.badEnd && info.badEnd[Math.floor(idx / strideS)] ? MX_WEIGHTS.override : 0;
     let r = (idx - (idx % RW)) / RW;
     const dd = r % DD;
     r = (r - dd) / DD;
     const nn = r % NN;
     r = (r - nn) / NN;
     const a = r % A;
-    const total = c0 + termMult * mxTerminalCost(ctx, info, a, nn, dd);
+    const total = c0 + endPenalty + termMult * mxTerminalCost(ctx, info, a, nn, dd);
     if (total < best) {
       best = total;
       bestIdx = idx;
