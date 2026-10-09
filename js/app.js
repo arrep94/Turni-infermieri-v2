@@ -352,6 +352,7 @@ const DEFAULT_RULES = {
   coppiaTurni: null, // Array of 2 nurse indices [n1, n2] to have same shifts, or null
   consentePomeriggioDiurno: false, // Allow P→D transition
   consenteDoppioDMensile: true, // Max ONE extra D per month per D/N-matrix nurse, replacing the SECOND rest (hour recovery)
+  doppiaNotteMensile: false, // M/P/N matrix: at most ONE N-N-S-R-R per nurse per month
   reperibileNotturno: true, // Night on-call: smonto today (with diurni) / morning today (without)
   reperibileDiurnoFestivo: true, // Day on-call on Sundays/holidays: nurse working the night that day
   fasciaOraria: 'auto', // 'auto' (segue i diurni) | 'standard' (6+12) | '7-10' (7+10)
@@ -1363,7 +1364,9 @@ function suggestCoverage() {
     const hN = FASCIA_PRESETS[fascia].N;
     const hMP = FASCIA_PRESETS[fascia].M;
     const target = getMonthlyTargetHours(state.year, state.month);
-    const nMax = Math.max(0, Math.floor((hMP * numDays - target) / (3 * hMP - hN)));
+    // The monthly doppia notte N-N-S-R-R saves one smonto: one more free day.
+    const blockDays = numDays + (state.rules.doppiaNotteMensile ? 1 : 0);
+    const nMax = Math.max(0, Math.floor((hMP * blockDays - target) / (3 * hMP - hN)));
     const nLow = Math.min(nMax, state.rules.maxNights ?? 5);
     const nHigh = Math.min(nMax, state.rules.hardMaxNights ?? 6);
     let fridays = 0;
@@ -1394,7 +1397,8 @@ function suggestCoverage() {
     }
     mpnNote =
       `Turnisti M/P/N: ${rot} con riposi solo dopo lo smonto. Monte ore ${target.toFixed(2)}h → ` +
-      `${nLow} notti e ${workMP} M/P a testa (massimo strutturale ${nMax} notti).` +
+      `${nLow} notti e ${workMP} M/P a testa (massimo strutturale ${nMax} notti` +
+      `${state.rules.doppiaNotteMensile ? ', con la doppia notte mensile' : ''}).` +
       (suggestion.maxCoverageM > COVERAGE_CAP
         ? ` Questo mese le ore in più vanno per forza su mattine/pomeriggi: oltre ${COVERAGE_CAP} non è un errore, è il monte ore.`
         : '');
@@ -1565,6 +1569,11 @@ function renderStep2() {
   bindToggle('tog-doppio-d-mensile', r.consenteDoppioDMensile, v => {
     state.rules.consenteDoppioDMensile = v;
     saveState();
+  });
+  bindToggle('tog-doppia-notte-mensile', !!r.doppiaNotteMensile, v => {
+    state.rules.doppiaNotteMensile = v;
+    saveState();
+    renderCoverageSuggestion();
   });
 
   // Fascia oraria radio buttons
@@ -3313,6 +3322,8 @@ const VIOLATION_HINTS = {
     'In un giorno con notti serve un reperibile notturno idoneo (mattina o smonto secondo il regime).',
   reperibile_diurno_mancante: 'Nei festivi serve un reperibile diurno: un infermiere che fa la notte quel giorno.',
   doppio_d_multiplo: 'È consentito al massimo UN doppio D di recupero ore al mese per infermiere.',
+  doppia_notte_multipla: 'È consentita al massimo UNA doppia notte (N-N-S-R-R) al mese per infermiere.',
+  doppia_notte_riposi: 'Dopo la doppia notte servono smonto e due riposi: N-N-S-R-R.',
   transition_doppio_d: 'D→D è permesso solo come doppio D mensile: al posto del secondo riposo, mai dopo lo smonto.',
 };
 
@@ -3941,13 +3952,30 @@ function revalidate() {
     state.schedule[n][d - 2] === 'S' &&
     state.schedule[n][d - 3] === 'N';
 
+  // N→N is legal only as the monthly doppia notte N-N-S-R-R of an M/P/N
+  // rotating nurse (option), never three nights in a row.
+  const isValidDoppiaNotte = (n, d) => {
+    const tags = nursesRv[n]?.tags || [];
+    const row = state.schedule[n];
+    return (
+      !!state.rules.doppiaNotteMensile &&
+      tags.includes('no_diurni') &&
+      !tags.includes('quattro_mattine_venerdi_notte') &&
+      row[d - 1] !== 'N' &&
+      row[d + 2] !== 'N'
+    );
+  };
+
   for (let n = 0; n < numNurses; n++) {
+    let nnPairs = 0;
     for (let d = 0; d < numDays - 1; d++) {
       const cur = state.schedule[n][d];
       const nxt = state.schedule[n][d + 1];
       const forbidden = FORBIDDEN_NEXT[cur] || [];
+      if (cur === 'N' && nxt === 'N') nnPairs++;
       if (forbidden.includes(nxt)) {
         if (cur === 'D' && nxt === 'D' && isValidDoppioD(n, d)) continue;
+        if (cur === 'N' && nxt === 'N' && isValidDoppiaNotte(n, d)) continue;
         violations.push({
           nurse: n,
           day: d,
@@ -3959,6 +3987,12 @@ function revalidate() {
         });
       }
     }
+    if (state.rules.doppiaNotteMensile && nnPairs > 1)
+      violations.push({
+        nurse: n,
+        type: 'doppia_notte_multipla',
+        msg: `Inf. ${n + 1}: ${nnPairs} doppie notti nel mese (massimo 1 consentita)`,
+      });
     // At most ONE doppio D per nurse per month
     if (state.rules.consenteDoppioDMensile) {
       let ddPairs = 0;

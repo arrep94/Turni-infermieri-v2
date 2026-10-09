@@ -71,6 +71,37 @@ function countDoppioD(schedule, n, numDays) {
   return count;
 }
 
+// Monthly doppia notte (rule "doppiaNotteMensile", M/P/N rotation only): the
+// block N-N-S-R-R. True when the nights of day d and d+1 form that pair (d may
+// be -1: first night on the last day of the previous month). A third night in
+// a row is never part of a pair.
+function isDoppiaNottePair(schedule, ctx, n, d) {
+  if (!ctx.doppiaNotteMensile || !isRestrictedNoDiurniNightNurse(ctx.nurseProps[n])) return false;
+  return (
+    getShiftAt(schedule, ctx, n, d) === 'N' &&
+    getShiftAt(schedule, ctx, n, d + 1) === 'N' &&
+    getShiftAt(schedule, ctx, n, d - 1) !== 'N' &&
+    getShiftAt(schedule, ctx, n, d + 2) !== 'N'
+  );
+}
+
+// Doppie notti starting inside the month (capped at one per month).
+function countDoppiaNotte(schedule, n, numDays) {
+  let count = 0;
+  for (let d = 0; d + 1 < numDays; d++) if (schedule[n][d] === 'N' && schedule[n][d + 1] === 'N') count++;
+  return count;
+}
+
+// The doppia notte is followed by S-R-R: false when the second rest (day d+4
+// for a pair starting on day d) falls inside the month and is not a rest or
+// an absence.
+function hasDoppiaNotteRests(schedule, n, d) {
+  const row = schedule[n];
+  if (d + 4 >= row.length) return true;
+  const c = row[d + 4];
+  return !(c === 'M' || c === 'P' || c === 'D' || c === 'N' || c === 'S');
+}
+
 const WEEKLY_REST_ABSENCE_SHIFTS = new Set(['F', 'MA', 'L104', 'PR', 'MT', 'CP', 'F0', 'MA0', 'MT0', 'CP0']);
 
 /**
@@ -661,8 +692,9 @@ function computeScore(schedule, ctx) {
           // D→D across the month boundary is legal only as a doppio D whose
           // extra D was the last day of the previous month.
           const boundaryDoppioD = lastShift === 'D' && day0 === 'D' && isDoppioDPair(schedule, ctx, n, -1);
-          if (fb0 && fb0.includes(day0) && !boundaryDoppioD) hard++;
-          if (lastShift === 'N' && day0 !== 'S') hard++;
+          const boundaryDoppiaN = lastShift === 'N' && day0 === 'N' && isDoppiaNottePair(schedule, ctx, n, -1);
+          if (fb0 && fb0.includes(day0) && !boundaryDoppioD && !boundaryDoppiaN) hard++;
+          if (lastShift === 'N' && day0 !== 'S' && !boundaryDoppiaN) hard++;
           if (lastShift === 'S' && day0 !== 'R') hard++;
         }
       }
@@ -673,11 +705,14 @@ function computeScore(schedule, ctx) {
       // Forbidden transitions. D→D is legal only as the monthly doppio D
       // (extra D replacing the SECOND rest of a D-N-S-R-R block).
       const fb = forbidden[cur];
-      if (fb && fb.includes(nxt)) {
+      // N→N is legal only as the monthly doppia notte (option).
+      const doppiaN = cur === 'N' && nxt === 'N' && isDoppiaNottePair(schedule, ctx, n, d);
+      if (fb && fb.includes(nxt) && !doppiaN) {
         if (!(cur === 'D' && nxt === 'D' && isDoppioDPair(schedule, ctx, n, d))) hard++;
       }
       // N must be followed by S
-      if (cur === 'N' && nxt !== 'S') hard++;
+      if (cur === 'N' && nxt !== 'S' && !doppiaN) hard++;
+      if (doppiaN && !hasDoppiaNotteRests(schedule, n, d)) hard++;
       // S must be followed by R
       if (cur === 'S' && nxt !== 'R') hard++;
     }
@@ -704,6 +739,10 @@ function computeScore(schedule, ctx) {
       const dd = countDoppioD(schedule, n, numDays);
       if (dd > 1) hard += dd - 1;
     }
+    if (ctx.doppiaNotteMensile) {
+      const dn = countDoppiaNotte(schedule, n, numDays);
+      if (dn > 1) hard += dn - 1;
+    }
     // Weekly rest — weighted 2× so the annealer does not systematically strip
     // rest days to patch coverage (which weighs UNDER_COVERAGE_WEIGHT).
     // Partial boundary weeks are exempt for rigid-matrix M/P nurses: their 5+2
@@ -719,7 +758,7 @@ function computeScore(schedule, ctx) {
     }
     for (let d = 0; d < numDays; d++) {
       if (schedule[n][d] !== 'N') continue;
-      const info = getNightPatternInfo(schedule, ctx, n, d);
+      const info = isDoppiaNottePair(schedule, ctx, n, d - 1) ? null : getNightPatternInfo(schedule, ctx, n, d);
       if (info && !info.validLead) hard++;
       if (hasForbiddenExtraNightRest(schedule, ctx, n, d)) hard++;
     }
@@ -1074,14 +1113,15 @@ function collectViolations(schedule, ctx) {
           const day0 = schedule[n][0];
           const fb0 = forbidden[lastShift];
           const boundaryDoppioD = lastShift === 'D' && day0 === 'D' && isDoppioDPair(schedule, ctx, n, -1);
-          if (fb0 && fb0.includes(day0) && !boundaryDoppioD)
+          const boundaryDoppiaN = lastShift === 'N' && day0 === 'N' && isDoppiaNottePair(schedule, ctx, n, -1);
+          if (fb0 && fb0.includes(day0) && !boundaryDoppioD && !boundaryDoppiaN)
             violations.push({
               nurse: n,
               day: -1,
               type: 'transition',
               msg: `Infermiere ${n + 1}, confine mese: transizione vietata ${lastShift}→${day0}`,
             });
-          if (lastShift === 'N' && day0 !== 'S')
+          if (lastShift === 'N' && day0 !== 'S' && !boundaryDoppiaN)
             violations.push({
               nurse: n,
               day: -1,
@@ -1102,14 +1142,22 @@ function collectViolations(schedule, ctx) {
       const cur = schedule[n][d],
         nxt = schedule[n][d + 1];
       const fb = forbidden[cur];
-      if (fb && fb.includes(nxt) && !(cur === 'D' && nxt === 'D' && isDoppioDPair(schedule, ctx, n, d)))
+      const doppiaN = cur === 'N' && nxt === 'N' && isDoppiaNottePair(schedule, ctx, n, d);
+      if (doppiaN && !hasDoppiaNotteRests(schedule, n, d))
+        violations.push({
+          nurse: n,
+          day: d,
+          type: 'doppia_notte_riposi',
+          msg: `Infermiere ${n + 1}, giorno ${d + 1}: dopo la doppia notte servono smonto e due riposi (N-N-S-R-R)`,
+        });
+      if (fb && fb.includes(nxt) && !doppiaN && !(cur === 'D' && nxt === 'D' && isDoppioDPair(schedule, ctx, n, d)))
         violations.push({
           nurse: n,
           day: d,
           type: 'transition',
           msg: `Infermiere ${n + 1}, giorno ${d + 1}-${d + 2}: transizione vietata ${cur}→${nxt}`,
         });
-      if (cur === 'N' && nxt !== 'S')
+      if (cur === 'N' && nxt !== 'S' && !doppiaN)
         violations.push({
           nurse: n,
           day: d,
@@ -1157,9 +1205,18 @@ function collectViolations(schedule, ctx) {
           msg: `Infermiere ${n + 1}: ${dd} doppi D nel mese (massimo 1 consentito)`,
         });
     }
+    if (ctx.doppiaNotteMensile) {
+      const dn = countDoppiaNotte(schedule, n, numDays);
+      if (dn > 1)
+        violations.push({
+          nurse: n,
+          type: 'doppia_notte_multipla',
+          msg: `Infermiere ${n + 1}: ${dn} doppie notti nel mese (massimo 1 consentita)`,
+        });
+    }
     for (let d = 0; d < numDays; d++) {
       if (schedule[n][d] !== 'N') continue;
-      const info = getNightPatternInfo(schedule, ctx, n, d);
+      const info = isDoppiaNottePair(schedule, ctx, n, d - 1) ? null : getNightPatternInfo(schedule, ctx, n, d);
       if (info && !info.validLead)
         violations.push({
           nurse: n,

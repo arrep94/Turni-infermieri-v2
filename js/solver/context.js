@@ -94,6 +94,8 @@ function buildContext(config) {
   // M/P days before each night.
   const maxRPerWeek = rules.maxRPerWeek ?? 2;
   const maxSequenzaLavoro = rules.maxSequenzaLavoro ?? 5;
+  // Optional: once per month a doppia notte N-N-S-R-R (two rests after it).
+  const doppiaNotteMensile = !!rules.doppiaNotteMensile;
 
   // Hour limits: the UI sliders express WEEKLY hours (min/max per settimana).
   // Convert them to monthly thresholds using the number of weekdays in the month
@@ -259,6 +261,7 @@ function buildContext(config) {
     minRPerWeek,
     maxRPerWeek,
     maxSequenzaLavoro,
+    doppiaNotteMensile,
     preferDiurni,
     coppiaTurni,
     consenteDoppioDMensile,

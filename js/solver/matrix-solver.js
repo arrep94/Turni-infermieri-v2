@@ -45,6 +45,7 @@ const MX_WEIGHTS = {
   nightsOverHard: 20000, // per night above "notti massime assolute"
   diurniSq: 5,
   weekNoRest: 6000, // full calendar week without any rest
+  doppiaNotte: 40, // the monthly N-N-S-R-R is used only when it helps
   override: 50000, // pinned cell that the matrix cannot reach
   noise: 3,
 };
@@ -100,45 +101,67 @@ function mxModelMPN(ctx) {
   const R1 = id++;
   const R2 = id++;
   const FREE = id++;
-  const numStates = id;
+  const base = id;
+  // Optional monthly doppia notte N-N-S-R-R: the states are duplicated in a
+  // "doppia già usata" half (offset `base`) plus the three forced states of
+  // the double block (second night, its smonto, the first of the two rests).
+  const dn = !!ctx.doppiaNotteMensile;
+  const N2 = dn ? base * 2 : -1;
+  const SD = dn ? base * 2 + 1 : -1;
+  const RD = dn ? base * 2 + 2 : -1;
+  const numStates = dn ? base * 2 + 3 : base;
   const { next, tcost } = mxNewTables(numStates);
   // Preferred stretch lengths before the night (3 is the ward's classic).
   const kCost = [0, 0, 25, 0, 10, 60, 120];
-  for (let k = 1; k <= K; k++) {
-    for (let m = 0; m <= k; m++) {
-      const s = wId[k][m];
-      const lastIsM = m === k;
-      if (k < K) {
-        if (lastIsM) next[s * 6 + MX_M] = wId[k + 1][m + 1];
-        next[s * 6 + MX_P] = wId[k + 1][m];
-      }
-      if (k >= 2) {
-        next[s * 6 + MX_N] = N_;
-        // Mild preference for mixed stretches (M-M-P, M-P-P) over pure ones.
-        const pure = k >= 3 && (m === 0 || m === k) ? 6 : 0;
-        tcost[s * 6 + MX_N] = kCost[k] + pure;
+  for (let used = 0; used < (dn ? 2 : 1); used++) {
+    const o = used * base;
+    for (let k = 1; k <= K; k++) {
+      for (let m = 0; m <= k; m++) {
+        const s = o + wId[k][m];
+        const lastIsM = m === k;
+        if (k < K) {
+          if (lastIsM) next[s * 6 + MX_M] = o + wId[k + 1][m + 1];
+          next[s * 6 + MX_P] = o + wId[k + 1][m];
+        }
+        if (k >= 2) {
+          next[s * 6 + MX_N] = o + N_;
+          // Mild preference for mixed stretches (M-M-P, M-P-P) over pure ones.
+          const pure = k >= 3 && (m === 0 || m === k) ? 6 : 0;
+          tcost[s * 6 + MX_N] = kCost[k] + pure;
+        }
       }
     }
+    next[(o + N_) * 6 + MX_S] = o + S_;
+    next[(o + S_) * 6 + MX_R] = o + R1;
+    next[(o + R1) * 6 + MX_R] = o + R2;
+    for (const s of [R1, R2, FREE]) {
+      next[(o + s) * 6 + MX_M] = o + wId[1][1];
+      next[(o + s) * 6 + MX_P] = o + wId[1][0];
+    }
   }
-  next[N_ * 6 + MX_S] = S_;
-  next[S_ * 6 + MX_R] = R1;
-  next[R1 * 6 + MX_R] = R2;
-  for (const s of [R1, R2, FREE]) {
-    next[s * 6 + MX_M] = wId[1][1];
-    next[s * 6 + MX_P] = wId[1][0];
+  if (dn) {
+    next[N_ * 6 + MX_N] = N2;
+    tcost[N_ * 6 + MX_N] = MX_WEIGHTS.doppiaNotte;
+    next[N2 * 6 + MX_S] = SD;
+    next[SD * 6 + MX_R] = RD;
+    next[RD * 6 + MX_R] = base + R2;
   }
   // N must be followed by S and S by R: an absence cannot start there.
   const absFrom = new Uint8Array(numStates).fill(1);
-  absFrom[N_] = 0;
-  absFrom[S_] = 0;
+  for (const s of [N_, S_, SD, base + N_, base + S_]) if (s >= 0) absFrom[s] = 0;
+  // A doppia notte is never cut by an absence (2 = forbidden, not overridable).
+  if (dn) absFrom[N2] = 2;
   return {
     kind: 'mpn',
-    restStates: [R2],
+    restStates: dn ? [R2, base + R2] : [R2],
     numStates,
     next,
     tcost,
     absFrom,
     resetState: FREE,
+    resetKeepsOffset: dn ? base : 0,
+    // A new month gives the doppia notte back (see mxReplayTail).
+    monthOffset: dn ? base : 0,
     // Free phase without continuity: the stretch may have started in the
     // previous month, so a night on day 1-2 is reachable.
     freeStarts: [FREE, S_, R1, wId[2][0], wId[2][1], wId[2][2], wId[3][1], wId[3][2]],
@@ -364,6 +387,7 @@ function mxReplayTail(model, tail) {
     const nx = model.next[st * 6 + sh];
     st = nx >= 0 ? nx : model.overrideState[sh];
   }
+  if (model.monthOffset && st >= model.monthOffset && st < model.monthOffset * 2) st -= model.monthOffset;
   return st;
 }
 
@@ -489,6 +513,8 @@ function mxSolveRow(ctx, model, info, mc, termMult) {
       const rw = reset ? 0 : rw0;
 
       if (pin === MX_ABS) {
+        // (On day 1 the state comes from last month: never leave the row empty.)
+        if (absFrom[st] === 2 && d > 0) continue;
         let ns = absFrom[st] ? model.resetState : -1;
         let extra = 0;
         if (ns < 0) {
@@ -512,7 +538,7 @@ function mxSolveRow(ctx, model, info, mc, termMult) {
         let ns = next[st * 6 + sh];
         let cost = c0;
         if (ns < 0 || (pin < 0 && !model.allowed[sh])) {
-          if (pin < 0 || !absFrom[st]) continue;
+          if (pin < 0 || !absFrom[st] || (absFrom[st] === 2 && d > 0)) continue;
           // Pinned cell the matrix cannot reach: requested rests (desiderate)
           // restart the matrix for free, anything else is a heavy override.
           ns = model.overrideState[sh];

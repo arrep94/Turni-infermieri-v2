@@ -112,7 +112,9 @@ function assertMPNRows(S, cfg, schedule) {
     for (let d = 0; d < row.length; d++) {
       assert.equal(S.isRestOutsideMPNMatrix(schedule, ctx, n, d), false, `isola di riposo n${n} g${d + 1}: ${row}`);
       if (d + 1 < row.length) {
-        if (row[d] === 'N') assert.equal(row[d + 1], 'S', `N senza S n${n} g${d + 1}`);
+        // The only N→N allowed is the first night of the monthly doppia notte.
+        const doppia = ctx.doppiaNotteMensile && row[d + 1] === 'N' && row[d - 1] !== 'N';
+        if (row[d] === 'N' && !doppia) assert.equal(row[d + 1], 'S', `N senza S n${n} g${d + 1}`);
         if (row[d] === 'S' && !ctx.pinned[n][d + 1]) assert.equal(row[d + 1], 'R', `S senza R n${n} g${d + 1}`);
         assert.ok(!(row[d] === 'P' && row[d + 1] === 'M'), `P→M n${n} g${d + 1}`);
       }
@@ -202,6 +204,64 @@ describe('Generatore a matrici', () => {
       for (const t of ['transition', 'need_2R_after_night', 'd_night_pattern', 'doppio_d_multiplo'])
         assert.ok(!types.includes(t), `${t} su ${row}`);
     }
+  });
+
+  it('doppia notte mensile (opzione): al massimo una N-N-S-R-R a testa, più notti coperte', () => {
+    const cfg = wardConfig(2027, 0, {
+      minCoverageM: 7,
+      minCoverageP: 7,
+      minCoverageN: 6,
+      maxCoverageN: 6,
+      maxNights: 6,
+      hardMaxNights: 7,
+      doppiaNotteMensile: true,
+    });
+    const res = S.withSeededRandom(5, () => S.solveMatrix(cfg, 4));
+    const ctx = assertMPNRows(S, cfg, res.schedule);
+    let doubles = 0;
+    for (let n = 0; n < ctx.numNurses; n++) {
+      const row = res.schedule[n].join('');
+      const pairs = [...row.matchAll(/NN/g)];
+      assert.ok(pairs.length <= 1, `più doppie notti: ${row}`);
+      assert.ok(!row.includes('NNN'), `tre notti di fila: ${row}`);
+      for (const p of pairs) {
+        assert.equal(
+          S.isRestrictedNoDiurniNightNurse(ctx.nurseProps[n]),
+          true,
+          `doppia notte fuori dai turnisti: ${row}`
+        );
+        const after = row.slice(p.index + 2, p.index + 5);
+        assert.equal(after, 'SRR'.slice(0, after.length), `dopo la doppia notte serve S-R-R: ${row}`);
+      }
+      doubles += pairs.length;
+      const h = S.nurseHours(res.schedule, n, ctx.numDays);
+      assert.ok(h >= ctx.monthlyTargetHours - 0.01, `n${n} sotto monte ore: ${h}`);
+    }
+    assert.ok(doubles > 0, 'nessuna doppia notte usata');
+    let shortNights = 0;
+    for (let d = 0; d < ctx.numDays; d++) if (S.dayCoverage(res.schedule, d, ctx.numNurses).N < 6) shortNights++;
+    assert.ok(shortNights <= 6, `troppe notti a 5: ${shortNights}`);
+    const types = new Set(res.violations.map(v => v.type));
+    for (const t of ['transition', 'N_no_S', 'mp_night_pattern', 'doppia_notte_multipla', 'doppia_notte_riposi'])
+      assert.ok(!types.has(t), `violazione ${t}`);
+  });
+
+  it('senza opzione la doppia notte resta una violazione', () => {
+    const cfg = wardConfig(2027, 0);
+    const ctx = S.buildContext(cfg);
+    const schedule = cfg.nurses.map(() => new Array(ctx.numDays).fill('M'));
+    schedule[3].splice(4, 7, 'P', 'P', 'N', 'N', 'S', 'R', 'R');
+    const types = S.collectViolations(schedule, ctx)
+      .filter(v => v.nurse === 3)
+      .map(v => v.type);
+    assert.ok(types.includes('N_no_S'));
+    cfg.rules.doppiaNotteMensile = true;
+    const ctx2 = S.buildContext(cfg);
+    const types2 = S.collectViolations(schedule, ctx2)
+      .filter(v => v.nurse === 3)
+      .map(v => v.type);
+    for (const t of ['N_no_S', 'transition', 'mp_night_pattern'])
+      assert.ok(!types2.includes(t), `${t} con opzione attiva`);
   });
 
   it('segnala come violazione un riposo non preceduto dallo smonto', () => {
