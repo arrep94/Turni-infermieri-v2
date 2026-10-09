@@ -122,6 +122,13 @@ function assertMPNRows(S, cfg, schedule) {
     for (const wDays of ctx.weekDaysList) {
       assert.ok(S.countMatrixWeekRest(schedule, ctx, n, wDays) <= ctx.maxRPerWeek, `troppi riposi n${n}: ${row}`);
     }
+    // Ward rule: at most 5 shifts in a row, night included — never 6.
+    let run = 0;
+    for (const c of row) {
+      run = c === 'M' || c === 'P' || c === 'N' ? run + 1 : 0;
+      assert.ok(run <= 5, `più di 5 turni di fila n${n}: ${row.join('')}`);
+    }
+    assert.equal(S.longWorkRunsMPN(schedule, ctx, n).length, 0, `sequenza_lavoro_lunga n${n}`);
   }
   return ctx;
 }

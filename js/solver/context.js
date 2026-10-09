@@ -90,8 +90,8 @@ function buildContext(config) {
   const maxNights = Math.min(rules.maxNights ?? 7, hardMaxNights);
   const minRPerWeek = rules.minRPerWeek ?? 2;
   // M/P/N matrix (no_diurni): rests only after the smonto (N-S-R or N-S-R-R),
-  // at most maxRPerWeek per calendar week, work stretches of 2..maxSequenzaLavoro
-  // M/P days before each night.
+  // at most maxRPerWeek per calendar week, at least 2 M/P days before each
+  // night and at most maxSequenzaLavoro shifts in a row NIGHT INCLUDED.
   const maxRPerWeek = rules.maxRPerWeek ?? 2;
   const maxSequenzaLavoro = rules.maxSequenzaLavoro ?? 5;
   // Optional: once per month a doppia notte N-N-S-R-R (two rests after it).

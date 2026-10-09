@@ -89,7 +89,11 @@ function mxNewTables(numStates) {
 // States: W(k, m) (k work days in the stretch, m of them mornings — the
 // stretch is always M…MP…P because P→M is forbidden), N, S, R1, R2, FREE.
 function mxModelMPN(ctx) {
-  const K = Math.max(2, Math.min(6, ctx.maxSequenzaLavoro || 5));
+  // maxSequenzaLavoro = consecutive WORKING days, night included (ward rule:
+  // never 6 in a row): at most L-1 M/P before a single night, L-2 before the
+  // doppia notte.
+  const L = Math.max(3, Math.min(6, ctx.maxSequenzaLavoro || 5));
+  const K = L - 1;
   const wId = [];
   let id = 0;
   for (let k = 1; k <= K; k++) {
@@ -97,6 +101,8 @@ function mxModelMPN(ctx) {
     for (let m = 0; m <= k; m++) wId[k][m] = id++;
   }
   const N_ = id++;
+  // NX: a night after the longest allowed stretch (cannot become a doppia).
+  const NX = id++;
   const S_ = id++;
   const R1 = id++;
   const R2 = id++;
@@ -124,7 +130,7 @@ function mxModelMPN(ctx) {
           next[s * 6 + MX_P] = o + wId[k + 1][m];
         }
         if (k >= 2) {
-          next[s * 6 + MX_N] = o + N_;
+          next[s * 6 + MX_N] = o + (k + 2 <= L ? N_ : NX);
           // Mild preference for mixed stretches (M-M-P, M-P-P) over pure ones.
           const pure = k >= 3 && (m === 0 || m === k) ? 6 : 0;
           tcost[s * 6 + MX_N] = kCost[k] + pure;
@@ -132,6 +138,7 @@ function mxModelMPN(ctx) {
       }
     }
     next[(o + N_) * 6 + MX_S] = o + S_;
+    next[(o + NX) * 6 + MX_S] = o + S_;
     next[(o + S_) * 6 + MX_R] = o + R1;
     next[(o + R1) * 6 + MX_R] = o + R2;
     for (const s of [R1, R2, FREE]) {
@@ -148,7 +155,7 @@ function mxModelMPN(ctx) {
   }
   // N must be followed by S and S by R: an absence cannot start there.
   const absFrom = new Uint8Array(numStates).fill(1);
-  for (const s of [N_, S_, SD, base + N_, base + S_]) if (s >= 0) absFrom[s] = 0;
+  for (const s of [N_, NX, S_, SD, base + N_, base + NX, base + S_]) if (s >= 0) absFrom[s] = 0;
   // A doppia notte is never cut by an absence (2 = forbidden, not overridable).
   if (dn) absFrom[N2] = 2;
   return {
@@ -164,7 +171,7 @@ function mxModelMPN(ctx) {
     monthOffset: dn ? base : 0,
     // Free phase without continuity: the stretch may have started in the
     // previous month, so a night on day 1-2 is reachable.
-    freeStarts: [FREE, S_, R1, wId[2][0], wId[2][1], wId[2][2], wId[3][1], wId[3][2]],
+    freeStarts: [FREE, S_, R1, wId[2][0], wId[2][1], wId[2][2], ...(K >= 3 ? [wId[3][1], wId[3][2]] : [])],
     overrideState: [wId[1][1], wId[1][0], FREE, N_, S_, R2],
     countsRest: true,
     weeklyMinR: 1,

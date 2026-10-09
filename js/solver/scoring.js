@@ -280,6 +280,33 @@ function isForbiddenRestrictedNoDiurniRestDay(schedule, ctx, nurseIdx, dayIdx) {
 // right after the smonto, not the second R of N-S-R-R): the "isola di riposo"
 // the ward forbids. Pinned cells (desiderate, continuity) and the first days
 // of a month without continuity (unknowable previous block) are exempt.
+// M/P/N matrix: start days of the runs of consecutive working days (M/P/N,
+// night included, previous-month tail counted) longer than maxSequenzaLavoro.
+// Ward rule: at most 5 shifts in a row night included, never 6.
+function longWorkRunsMPN(schedule, ctx, n) {
+  if (!isRestrictedNoDiurniNightNurse(ctx.nurseProps[n])) return [];
+  const limit = ctx.maxSequenzaLavoro || 5;
+  const isWork = c => c === 'M' || c === 'P' || c === 'N' || c === 'D';
+  const tail = (ctx.prevTail && ctx.prevTail[n]) || [];
+  let run = 0;
+  for (let k = tail.length - 1; k >= 0 && isWork(tail[k]); k--) run++;
+  const starts = [];
+  let flagged = false;
+  for (let d = 0; d < schedule[n].length; d++) {
+    if (isWork(schedule[n][d])) {
+      run++;
+      if (run > limit && !flagged) {
+        starts.push(d);
+        flagged = true;
+      }
+    } else {
+      run = 0;
+      flagged = false;
+    }
+  }
+  return starts;
+}
+
 function isRestOutsideMPNMatrix(schedule, ctx, n, d) {
   if (!isRestrictedNoDiurniNightNurse(ctx.nurseProps[n])) return false;
   if (schedule[n][d] !== 'R') return false;
@@ -909,6 +936,7 @@ function computeScore(schedule, ctx) {
     for (let d = 0; d < numDays; d++) {
       if (isRestOutsideMPNMatrix(schedule, ctx, n, d)) hard++;
     }
+    hard += longWorkRunsMPN(schedule, ctx, n).length;
     for (const wDays of weekDaysList) {
       const have = countMatrixWeekRest(schedule, ctx, n, wDays);
       if (have > ctx.maxRPerWeek) hard += have - ctx.maxRPerWeek;
@@ -1370,6 +1398,18 @@ function collectViolations(schedule, ctx) {
           });
         }
       }
+    }
+  }
+
+  // M/P/N matrix: at most maxSequenzaLavoro shifts in a row, night included.
+  for (let n = 0; n < numNurses; n++) {
+    for (const d of longWorkRunsMPN(schedule, ctx, n)) {
+      violations.push({
+        type: 'sequenza_lavoro_lunga',
+        nurse: n,
+        day: d,
+        msg: `${ctx.nurses[n].name}, giorno ${d + 1}: più di ${ctx.maxSequenzaLavoro} turni di fila (notte compresa)`,
+      });
     }
   }
 

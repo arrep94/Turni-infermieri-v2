@@ -346,7 +346,7 @@ const DEFAULT_RULES = {
   minGap11h: true,
   minRPerWeek: 2,
   maxRPerWeek: 2, // M/P/N matrix: rests only after the smonto, at most this many per week
-  maxSequenzaLavoro: 5, // M/P/N matrix: longest M/P stretch before a night
+  maxSequenzaLavoro: 5, // M/P/N matrix: max consecutive shifts, night included (never 6)
   preferDiurni: false,
   // New flags
   coppiaTurni: null, // Array of 2 nurse indices [n1, n2] to have same shifts, or null
@@ -3322,6 +3322,8 @@ const VIOLATION_HINTS = {
     'In un giorno con notti serve un reperibile notturno idoneo (mattina o smonto secondo il regime).',
   reperibile_diurno_mancante: 'Nei festivi serve un reperibile diurno: un infermiere che fa la notte quel giorno.',
   doppio_d_multiplo: 'È consentito al massimo UN doppio D di recupero ore al mese per infermiere.',
+  sequenza_lavoro_lunga:
+    'Al massimo 5 turni di fila notte compresa (es. M-M-P-P-N): mai 6 giorni lavorativi consecutivi.',
   doppia_notte_multipla: 'È consentita al massimo UNA doppia notte (N-N-S-R-R) al mese per infermiere.',
   doppia_notte_riposi: 'Dopo la doppia notte servono smonto e due riposi: N-N-S-R-R.',
   transition_doppio_d: 'D→D è permesso solo come doppio D mensile: al posto del secondo riposo, mai dopo lo smonto.',
