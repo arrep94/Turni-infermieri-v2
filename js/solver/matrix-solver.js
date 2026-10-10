@@ -232,6 +232,9 @@ function mxModelDN(ctx) {
     absFrom,
     resetState: FREE,
     resetKeepsOffset: base,
+    // A doppio D in the last days of the previous month does not use up the
+    // one allowed this month (see mxReplayTail).
+    monthOffset: base,
     freeStarts: [FREE, DL, NF, SF, R1F, R2],
     // The extra D of the doppio D needs its paired D inside the month.
     badFinal: [DX, base + DX],

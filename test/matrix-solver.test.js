@@ -270,6 +270,26 @@ describe('Generatore a matrici', () => {
     }
   });
 
+  it('D/N: un doppio D a fine mese non toglie quello del mese dopo', () => {
+    const cfg = wardConfig(2027, 1, {
+      minCoverageD: 0,
+      maxCoverageD: 9,
+      minCoverageN: 0,
+      maxCoverageN: 9,
+      fasciaOraria: 'auto',
+    });
+    cfg.nurses = cfg.nurses.map((n, i) => ({ ...n, tags: i === 0 ? ['solo_mattine'] : ['diurni_e_notturni'] }));
+    // Fine gennaio con il doppio D (…N-S-R-D-D): febbraio deve poterne fare un altro.
+    cfg.previousMonthTail = cfg.nurses.map((_, i) => (i === 0 ? [] : ['D', 'N', 'S', 'R', 'D', 'D', 'N']));
+    const ctx = S.buildContext(cfg);
+    const model = S.mxBuildModel(ctx, 1);
+    const info = { ...S.mxPrepareNurse(ctx, 1, model), n: 1 };
+    // Nessuna copertura da inseguire, ma tante ore da recuperare: serve il doppio D.
+    info.target = 200;
+    const res = S.mxSolveRow(ctx, model, info, new Float64Array(ctx.numDays * 4), 1);
+    assert.match(res.row.join(''), /DD/, `nessun doppio D a febbraio: ${res.row.join('')}`);
+  });
+
   it('senza opzione la doppia notte resta una violazione', () => {
     const cfg = wardConfig(2027, 0);
     const ctx = S.buildContext(cfg);
