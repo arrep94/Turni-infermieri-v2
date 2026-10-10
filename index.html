@@ -979,6 +979,31 @@
             GENERA TURNI
           </button>
 
+          <!-- Whole year -->
+          <div
+            class="mb-6 p-4 rounded-2xl border border-emerald-300 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-950/30"
+          >
+            <h3 class="font-semibold text-sm mb-1">📅 Genera tutto l'anno</h3>
+            <p class="text-xs text-gray-600 dark:text-slate-400 mb-2">
+              12 mesi in fila (<span id="year-plan-range"></span>): ogni mese riparte dagli ultimi giorni del precedente
+              e ne eredita saldo ore ed equità di notti e festivi. Ferie, assenze e desiderate vengono rispettate
+              secondo le loro date. Al termine trovi il piano nei risultati, mese per mese.
+            </p>
+            <label class="flex items-start gap-2 text-xs mb-3 cursor-pointer">
+              <input id="chk-year-compensate" type="checkbox" checked class="mt-0.5" />
+              <span
+                ><b>Compensa le ore nell'anno</b>: conta il monte ore annuale; ogni mese punta a monte del mese − saldo
+                accumulato (i doppi D vanno a chi è indietro, nessuno chiude l'anno sotto).</span
+              >
+            </label>
+            <button
+              id="btn-generate-year"
+              class="btn w-full py-3 text-base font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow transition-colors disabled:opacity-60"
+            >
+              📅 GENERA TUTTO L’ANNO (12 MESI)
+            </button>
+          </div>
+
           <!-- Progress bar -->
           <div class="mb-2">
             <div class="w-full h-4 bg-gray-200 dark:bg-slate-700 rounded-full overflow-hidden">
@@ -1073,6 +1098,9 @@
             <input id="inp-load-file" type="file" accept=".json" class="hidden" />
           </div>
         </div>
+
+        <!-- Year plan ("Genera tutto l'anno") -->
+        <div id="year-plan-panel" class="mb-4 hidden"></div>
 
         <!-- Solution picker (shown when multiple solutions) -->
         <div id="solver-method-banner" class="mb-4 hidden"></div>

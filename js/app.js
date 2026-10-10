@@ -505,6 +505,8 @@ let state = {
   previousMonthSchedule: null, // 2D array [nurse][day] of shift codes from prev month
   previousMonthHours: null, // array of total hours per nurse from prev month
   previousMonthPeriod: null, // { month, year } the imported roster belongs to
+  yearPlan: null, // "Genera tutto l'anno": { startYear, startMonth, compensate, months: [...] }
+  yearPlanIdx: null, // index of the plan month shown in the grid
 };
 
 // ---------------------------------------------------------------------------
@@ -2322,6 +2324,11 @@ function computePrevMonthDeltas() {
  * Each entry is the hour adjustment: negative means nurse should work more this month.
  */
 function buildHourDeltas() {
+  const planMonth = yearPlanCurrentMonth();
+  if (planMonth && state.yearPlanIdx > 0) {
+    const d = planMonth.deltas || planMonth.saldoBefore.map(x => -x);
+    return d.every(v => v === 0) ? null : d.slice();
+  }
   const deltas = computePrevMonthDeltas();
   if (!deltas) return null;
   const activeNurses = state.nurses.slice(0, state.totalNurses - state.absentNurses);
@@ -2348,17 +2355,23 @@ const FESTIVI_CARRYOVER_CAP = 2;
  * null when no previous month data is available or everything is balanced.
  */
 function buildEquityCarryover() {
+  const planPrev = yearPlanPreviousMonth();
+  if (planPrev) return equityCarryoverFrom(planPrev.schedule, planPrev);
   if (!state.previousMonthSchedule || !state.previousMonthPeriod) return null;
+  return equityCarryoverFrom(state.previousMonthSchedule, state.previousMonthPeriod);
+}
+
+function equityCarryoverFrom(prevSchedule, period) {
   const activeNurses = state.nurses.slice(0, state.totalNurses - state.absentNurses);
-  const { month, year } = state.previousMonthPeriod;
-  const prevDays = state.previousMonthSchedule[0]?.length || 0;
+  const { month, year } = period;
+  const prevDays = prevSchedule[0]?.length || 0;
   if (prevDays === 0) return null;
 
   const WORK_SHIFTS = new Set(['M', 'P', 'D', 'N']);
   const nightsRaw = [];
   const festiviRaw = [];
   for (let n = 0; n < activeNurses.length; n++) {
-    const row = state.previousMonthSchedule[n];
+    const row = prevSchedule[n];
     if (!Array.isArray(row) || !row.some(Boolean)) {
       nightsRaw.push(null);
       festiviRaw.push(null);
@@ -2394,6 +2407,8 @@ function buildEquityCarryover() {
  * with any imported previous-month roster.
  */
 function buildPrevMonthTail() {
+  const planPrev = yearPlanPreviousMonth();
+  if (planPrev) return planPrev.schedule.map(row => row.slice(-IMPORTED_PREVIOUS_MONTH_TAIL_DAYS));
   const activeNurses = state.nurses.slice(0, state.totalNurses - state.absentNurses);
   const tail = activeNurses.map((nurse, nurseIdx) => {
     const importedTail = getImportedPrevMonthTailForNurse(nurseIdx) || [];
@@ -2587,6 +2602,15 @@ function renderGenerateStep() {
       saveState();
     };
   }
+
+  const yearEnd = yearPlanMonthAt(state.year, state.month, 11);
+  setEl(
+    'year-plan-range',
+    `${MONTHS_IT[state.month]} ${state.year} – ${MONTHS_IT[yearEnd.month]} ${yearEnd.year} · circa ${Math.max(
+      1,
+      Math.round((12 * yearPlanBudgetPerMonth()) / 60)
+    )} minuti`
+  );
 
   renderFeasibilityCheck();
 }
@@ -3367,6 +3391,7 @@ function renderStep4() {
   if (!container) return;
 
   // Render solution picker and solver method banner
+  renderYearPlanPanel();
   renderSolutionPicker();
   renderSolverMethodBanner();
   renderDiagnosticsPanel('solver-diagnostics-banner', state.solverDiagnostics);
@@ -4102,6 +4127,486 @@ function revalidate() {
 // Export: CSV
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Genera tutto l'anno: 12 mesi in fila con continuità, saldo ore ed equità
+// ---------------------------------------------------------------------------
+
+// Days of each generated month handed to the next one as continuity tail.
+const YEAR_PLAN_TAIL_DAYS = 7;
+let yearRun = null; // { abort, reject } while a year generation is running
+
+function yearPlanMonthAt(startYear, startMonth, k) {
+  const abs = startMonth + k;
+  return { year: startYear + Math.floor(abs / 12), month: abs % 12 };
+}
+
+// The plan month shown in the grid, when the grid IS that month.
+function yearPlanCurrentMonth() {
+  const plan = state.yearPlan;
+  if (!plan || state.yearPlanIdx === null || state.yearPlanIdx === undefined) return null;
+  const m = plan.months[state.yearPlanIdx];
+  return m && m.year === state.year && m.month === state.month ? m : null;
+}
+
+// The plan month before the one shown (continuity, saldo, equity source).
+function yearPlanPreviousMonth() {
+  return yearPlanCurrentMonth() && state.yearPlanIdx > 0 ? state.yearPlan.months[state.yearPlanIdx - 1] : null;
+}
+
+function yearPlanBudgetPerMonth() {
+  if (state.timeBudget === -1) return 60;
+  return state.timeBudget === 0 ? Math.min(estimateTimeBudget(), 45) : state.timeBudget;
+}
+
+// Look-ahead for the D/N matrix with yearly compensation: a D-N-S-R-R row
+// works 2 days out of 5 plus at most one doppio D a month, which is not
+// enough in the heavy months (22-23 weekdays). Worst-case phase: only
+// floor(2·days/5) shifts in the month. needs[k] = hour credit a D/N nurse
+// should already have when month k ends, so the later months close.
+function yearPlanDnNeeds(startYear, startMonth) {
+  const hours = FASCIA_PRESETS[resolveFasciaOraria(state.rules.fasciaOraria)];
+  const perShift = ((hours.D || 0) + (hours.N || 0)) / 2;
+  const doppioD = state.rules.consenteDoppioDMensile ? hours.D || 0 : 0;
+  const caps = [];
+  for (let k = 0; k < 12; k++) {
+    const { year, month } = yearPlanMonthAt(startYear, startMonth, k);
+    const shifts = Math.floor((2 * daysInMonth(year, month)) / 5);
+    caps.push(shifts * perShift + doppioD - getMonthlyTargetHours(year, month));
+  }
+  const needs = new Array(12).fill(0);
+  let need = 0;
+  for (let k = 11; k >= 0; k--) {
+    needs[k] = need; // credit required at the END of month k
+    need = Math.max(0, need - caps[k]);
+  }
+  return needs;
+}
+
+// One month solved by the (reused) worker; progress mapped onto the year bar.
+function yearPlanSolveMonth(worker, config, k, label) {
+  return new Promise((resolve, reject) => {
+    yearRun.reject = reject;
+    worker.onmessage = e => {
+      const data = e.data;
+      if (data.type === 'progress') {
+        updateSolverProgress(((k + (data.percent || 0) / 100) / 12) * 100, `${label}: ${data.message || ''}`);
+      } else if (data.type === 'result') resolve(data);
+      else if (data.type === 'error') reject(new Error(data.message || 'Errore nel solver'));
+    };
+    worker.onerror = err => reject(new Error(err.message || 'Worker error'));
+    worker.postMessage({
+      type: 'solve',
+      config,
+      numSolutions: state.numSolutions,
+      timeBudget: yearPlanBudgetPerMonth(),
+      untilZeroViolations: false,
+      solverChoice: state.solverChoice || 'auto',
+    });
+  });
+}
+
+function setYearButton(running) {
+  const btn = document.getElementById('btn-generate-year');
+  if (!btn) return;
+  btn.textContent = running ? '⏹ Interrompi la generazione dell’anno' : '📅 GENERA TUTTO L’ANNO (12 MESI)';
+  btn.classList.toggle('bg-red-600', running);
+  btn.classList.toggle('hover:bg-red-700', running);
+  btn.classList.toggle('bg-emerald-600', !running);
+  btn.classList.toggle('hover:bg-emerald-700', !running);
+  const single = document.getElementById('btn-generate');
+  if (single) single.disabled = running;
+}
+
+async function startYearSolver() {
+  if (yearRun) {
+    // Second click = stop: keep the months already generated.
+    yearRun.abort = true;
+    if (state.worker) state.worker.terminate();
+    state.worker = null;
+    if (yearRun.reject) yearRun.reject(new Error('interrotto'));
+    return;
+  }
+  const startYear = state.year;
+  const startMonth = state.month;
+  const last = yearPlanMonthAt(startYear, startMonth, 11);
+  const minutes = Math.max(1, Math.round((12 * yearPlanBudgetPerMonth()) / 60));
+  if (
+    !confirm(
+      `Generare 12 mesi, da ${MONTHS_IT[startMonth]} ${startYear} a ${MONTHS_IT[last.month]} ${last.year}?\n\n` +
+        `Ogni mese riparte dagli ultimi giorni del precedente e ne eredita saldo ore ed equità notti/festivi. ` +
+        `Tempo previsto: circa ${minutes} minuti (tienila aperta). Il piano annuale precedente verrà sostituito.`
+    )
+  )
+    return;
+
+  const compensate = document.getElementById('chk-year-compensate')?.checked !== false;
+  const activeNurses = state.nurses.slice(0, state.totalNurses - state.absentNurses);
+  // With yearly compensation the monte ore that counts is the yearly one: the
+  // monthly minimum is lifted and each month aims at monte − saldo.
+  const rules = compensate ? { ...state.rules, minHours: 0 } : { ...state.rules };
+  const dnNeeds = compensate ? yearPlanDnNeeds(startYear, startMonth) : new Array(12).fill(0);
+  const isDN = activeNurses.map(nurse => (nurse.tags || []).includes('diurni_e_notturni'));
+  const firstDeltas = buildHourDeltas();
+  let saldo = activeNurses.map((_, n) => (firstDeltas ? -firstDeltas[n] : 0));
+  let tail = buildPrevMonthTail();
+  let equity = buildEquityCarryover();
+
+  if (state.worker) state.worker.terminate();
+  const worker = new Worker('js/solver.js');
+  state.worker = worker;
+  yearRun = { abort: false, reject: null };
+  resetSolverFeedback();
+  setYearButton(true);
+  const months = [];
+  let failure = null;
+  for (let k = 0; k < 12 && !yearRun.abort; k++) {
+    const { year, month } = yearPlanMonthAt(startYear, startMonth, k);
+    const label = `Mese ${k + 1}/12 · ${MONTHS_IT[month]} ${year}`;
+    updateSolverProgress((k / 12) * 100, `${label}…`);
+    const deltas = activeNurses.map((_, n) => {
+      const want = -saldo[n] + (isDN[n] ? dnNeeds[k] : 0);
+      return Math.round(Math.max(-HOUR_CARRYOVER_CAP, Math.min(HOUR_CARRYOVER_CAP, want)) * 10) / 10;
+    });
+    const config = {
+      year,
+      month,
+      nurses: activeNurses,
+      rules,
+      hourDeltas: deltas.some(d => d !== 0) ? deltas : null,
+      previousMonthTail: tail,
+      equityCarryover: equity,
+    };
+    let data;
+    try {
+      data = await yearPlanSolveMonth(worker, config, k, label);
+    } catch (err) {
+      if (!yearRun.abort) failure = `${label}: ${err.message}`;
+      break;
+    }
+    const best = (data.solutions && data.solutions[0]) || data;
+    const monte = getMonthlyTargetHours(year, month);
+    const hours = activeNurses.map((_, n) => {
+      const st = best.stats && best.stats[n];
+      if (st && typeof st.totalHours === 'number') return st.totalHours;
+      return best.schedule[n].reduce((h, c) => h + (SHIFT_HOURS[c] || 0), 0);
+    });
+    months.push({
+      year,
+      month,
+      schedule: best.schedule,
+      violations: best.violations || [],
+      stats: best.stats || [],
+      solverMethod: best.solverMethod || data.solverMethod || null,
+      monte,
+      saldoBefore: saldo.slice(),
+      deltas,
+      hours,
+      reperibili: {},
+      reperibiliDiurni: {},
+    });
+    saldo = saldo.map((x, n) => Math.round((x + hours[n] - monte) * 10) / 10);
+    tail = best.schedule.map(row => row.slice(-YEAR_PLAN_TAIL_DAYS));
+    equity = equityCarryoverFrom(best.schedule, { year, month });
+    // Saved month by month: a closed tab keeps what was already generated.
+    state.yearPlan = { startYear, startMonth, compensate, rules: { ...state.rules }, months: months.slice() };
+    state.yearPlanIdx = null;
+    saveState();
+  }
+  worker.terminate();
+  state.worker = null;
+  const aborted = yearRun.abort;
+  yearRun = null;
+  setYearButton(false);
+  if (!months.length) {
+    updateSolverProgress(0, failure || 'Generazione dell’anno interrotta.');
+    return;
+  }
+  updateSolverProgress(
+    100,
+    failure
+      ? `Fermata a ${months.length} mesi — ${failure}`
+      : aborted
+        ? `Interrotta: ${months.length} mesi generati.`
+        : '12 mesi generati.'
+  );
+  openYearMonth(0);
+}
+
+// Copy the grid (with manual edits) back into its plan month.
+function syncYearPlanFromCurrent() {
+  const m = yearPlanCurrentMonth();
+  if (!m || !state.schedule) return;
+  m.schedule = state.schedule.map(row => row.slice());
+  m.violations = state.violations || [];
+  m.stats = state.stats || [];
+  m.reperibili = { ...(state.reperibili || {}) };
+  m.reperibiliDiurni = { ...(state.reperibiliDiurni || {}) };
+  m.hours = m.schedule.map((row, n) => {
+    const st = m.stats[n];
+    return st && typeof st.totalHours === 'number' ? st.totalHours : row.reduce((h, c) => h + (SHIFT_HOURS[c] || 0), 0);
+  });
+}
+
+function openYearMonth(idx) {
+  const plan = state.yearPlan;
+  if (!plan || !plan.months[idx]) return;
+  syncYearPlanFromCurrent();
+  const m = plan.months[idx];
+  state.year = m.year;
+  state.month = m.month;
+  state.schedule = m.schedule.map(row => row.slice());
+  state.violations = m.violations || [];
+  state.stats = m.stats || [];
+  state.solutions = [];
+  state.selectedSolution = 0;
+  state.solverMethod = m.solverMethod || state.solverMethod;
+  state.reperibili = { ...(m.reperibili || {}) };
+  state.reperibiliDiurni = { ...(m.reperibiliDiurni || {}) };
+  state.yearPlanIdx = idx;
+  saveState();
+  renderAll();
+  goToStep(5);
+}
+
+function closeYearPlan() {
+  if (!state.yearPlan) return;
+  if (!confirm('Chiudere il piano annuale? I 12 mesi generati verranno eliminati (la griglia mostrata resta).')) return;
+  syncYearPlanFromCurrent();
+  state.yearPlan = null;
+  state.yearPlanIdx = null;
+  saveState();
+  renderAll();
+}
+
+// Per-month figures for the summary (coverage against the plan rules).
+function yearPlanMonthSummary(m, rules) {
+  const numDays = m.schedule[0]?.length || 0;
+  let shortN = 0,
+    shortMP = 0,
+    shortD = 0;
+  for (let d = 0; d < numDays; d++) {
+    let M = 0,
+      P = 0,
+      D = 0,
+      N = 0;
+    for (const row of m.schedule) {
+      const c = row[d];
+      if (c === 'M' || c === 'D') M++;
+      if (c === 'P' || c === 'D') P++;
+      if (c === 'D') D++;
+      if (c === 'N') N++;
+    }
+    if (N < rules.minCoverageN) shortN++;
+    if (M < rules.minCoverageM || P < rules.minCoverageP) shortMP++;
+    if (D < rules.minCoverageD) shortD++;
+  }
+  const other = (m.violations || []).filter(v => !/^coverage/.test(v.type)).length;
+  const deltas = m.hours.map(h => h - m.monte);
+  return { shortN, shortMP, shortD, other, minDelta: Math.min(...deltas), maxDelta: Math.max(...deltas) };
+}
+
+function yearPlanFinalSaldo(plan) {
+  const n = plan.months[0]?.schedule.length || 0;
+  return Array.from({ length: n }, (_, i) =>
+    plan.months.reduce((acc, m) => acc + (m.hours[i] || 0) - m.monte, plan.months[0].saldoBefore[i] || 0)
+  );
+}
+
+function renderYearPlanPanel() {
+  const el = document.getElementById('year-plan-panel');
+  if (!el) return;
+  const plan = state.yearPlan;
+  if (!plan || !plan.months.length) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  syncYearPlanFromCurrent();
+  el.classList.remove('hidden');
+  const rules = plan.rules || state.rules;
+  const first = plan.months[0];
+  const lastM = plan.months[plan.months.length - 1];
+  const fmt = x => (x >= 0 ? '+' : '') + x.toFixed(1).replace('.', ',');
+  const tabs = plan.months
+    .map((m, i) => {
+      const s = yearPlanMonthSummary(m, rules);
+      const active = i === state.yearPlanIdx && yearPlanCurrentMonth();
+      const badge =
+        s.shortN + s.shortMP > 0
+          ? `<span class="ml-1 text-[10px] font-bold text-red-600">${s.shortN + s.shortMP}</span>`
+          : '';
+      return `<button data-year-month="${i}" class="btn px-2.5 py-1 rounded-lg text-xs font-semibold border ${
+        active
+          ? 'bg-emerald-600 text-white border-emerald-600'
+          : 'bg-white dark:bg-slate-800 border-gray-300 dark:border-slate-600 hover:bg-emerald-50 dark:hover:bg-slate-700'
+      }">${MONTHS_IT[m.month].slice(0, 3)} ${String(m.year).slice(2)}${badge}</button>`;
+    })
+    .join('');
+  const rows = plan.months
+    .map((m, i) => {
+      const s = yearPlanMonthSummary(m, rules);
+      const red = v => (v > 0 ? 'text-red-600 font-bold' : 'text-green-700 dark:text-green-400');
+      return `<tr class="${i === state.yearPlanIdx ? 'bg-emerald-50 dark:bg-slate-700' : ''}">
+        <td class="px-2 py-1 text-left">${MONTHS_IT[m.month]} ${m.year}</td>
+        <td class="px-2 py-1">${m.monte.toFixed(2).replace('.', ',')}</td>
+        <td class="px-2 py-1 ${red(s.shortN)}">${s.shortN}</td>
+        <td class="px-2 py-1 ${red(s.shortMP)}">${s.shortMP}</td>
+        ${rules.minCoverageD > 0 ? `<td class="px-2 py-1 ${red(s.shortD)}">${s.shortD}</td>` : ''}
+        <td class="px-2 py-1 ${red(s.other)}">${s.other}</td>
+        <td class="px-2 py-1">${fmt(s.minDelta)} / ${fmt(s.maxDelta)}</td>
+      </tr>`;
+    })
+    .join('');
+  const saldo = yearPlanFinalSaldo(plan);
+  const names = state.nurses.slice(0, saldo.length).map(n => n.name);
+  const under = saldo.filter(x => x < -0.05).length;
+  const saldoList = saldo
+    .map(
+      (x, i) =>
+        `<span class="inline-block mr-3 mb-1 whitespace-nowrap">${escHtml(names[i])}: <b class="${
+          x < -0.05 ? 'text-red-600' : 'text-green-700 dark:text-green-400'
+        }">${fmt(x)} h</b></span>`
+    )
+    .join('');
+  el.innerHTML = `<div class="rule-card">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+      <h3 class="font-semibold text-sm">📅 Piano annuale: ${MONTHS_IT[first.month]} ${first.year} – ${MONTHS_IT[lastM.month]} ${lastM.year}
+        <span class="font-normal text-xs text-gray-500 dark:text-slate-400">· ${plan.months.length} mesi · ore ${
+          plan.compensate ? 'compensate sull’anno' : 'a monte mensile'
+        }</span></h3>
+      <div class="flex flex-wrap gap-2 no-print">
+        <button id="btn-year-csv" class="btn px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded-lg">📥 CSV anno</button>
+        <button id="btn-year-print" class="btn px-3 py-1.5 bg-gray-600 hover:bg-gray-700 text-white text-xs font-semibold rounded-lg">🖨️ Stampa / PDF anno</button>
+        <button id="btn-year-close" class="btn px-3 py-1.5 border border-gray-300 dark:border-slate-600 text-xs font-semibold rounded-lg hover:bg-gray-100 dark:hover:bg-slate-700">✖ Chiudi piano</button>
+      </div>
+    </div>
+    <p class="text-xs text-gray-500 dark:text-slate-400 mb-2">Clicca un mese per aprirlo nella griglia: le modifiche fatte a mano restano nel piano (il saldo dei mesi successivi non viene ricalcolato).</p>
+    <div class="flex flex-wrap gap-1.5 mb-3 no-print">${tabs}</div>
+    <div class="overflow-x-auto"><table class="text-xs text-center w-full border-collapse">
+      <thead><tr class="bg-gray-100 dark:bg-slate-700">
+        <th class="px-2 py-1 text-left">Mese</th><th class="px-2 py-1">Monte ore</th>
+        <th class="px-2 py-1">Notti sotto ${rules.minCoverageN}</th><th class="px-2 py-1">Giorni M/P sotto minimo</th>
+        ${rules.minCoverageD > 0 ? `<th class="px-2 py-1">Giorni D sotto ${rules.minCoverageD}</th>` : ''}
+        <th class="px-2 py-1">Altre violazioni</th><th class="px-2 py-1">Ore rispetto al monte del mese (min / max)</th>
+      </tr></thead><tbody>${rows}</tbody></table></div>
+    <details class="mt-3"><summary class="text-xs font-semibold cursor-pointer">Saldo ore a fine piano per infermiere (${
+      under ? `<span class="text-red-600">${under} sotto</span>` : 'nessuno sotto'
+    })</summary><div class="text-xs mt-2">${saldoList}</div></details>
+  </div>`;
+  el.querySelectorAll('[data-year-month]').forEach(btn =>
+    btn.addEventListener('click', () => openYearMonth(parseInt(btn.dataset.yearMonth, 10)))
+  );
+  document.getElementById('btn-year-csv')?.addEventListener('click', exportYearCSV);
+  document.getElementById('btn-year-print')?.addEventListener('click', printYearPlan);
+  document.getElementById('btn-year-close')?.addEventListener('click', closeYearPlan);
+}
+
+function exportYearCSV() {
+  const plan = state.yearPlan;
+  if (!plan) return;
+  syncYearPlanFromCurrent();
+  const rows = [];
+  plan.months.forEach((m, mi) => {
+    const numDays = m.schedule[0].length;
+    if (mi > 0) rows.push([]);
+    rows.push([
+      `${MONTHS_IT[m.month]} ${m.year}`,
+      ...Array.from({ length: numDays }, (_, d) => `${d + 1} ${DOW_LABELS[dayOfWeek(m.year, m.month, d + 1)]}`),
+      'Ore',
+      'Monte',
+      'Notti',
+    ]);
+    m.schedule.forEach((row, n) => {
+      rows.push([
+        state.nurses[n]?.name || `Infermiere ${n + 1}`,
+        ...row,
+        (Math.round(m.hours[n] * 10) / 10).toString().replace('.', ','),
+        m.monte.toFixed(2).replace('.', ','),
+        row.filter(c => c === 'N').length,
+      ]);
+    });
+  });
+  const first = plan.months[0];
+  downloadFile(formatCsv(rows), `turni_anno_${MONTHS_IT[first.month]}_${first.year}.csv`, 'text/csv;charset=utf-8;');
+}
+
+// Printable year (one landscape page per month): the browser's print dialog
+// can save it as PDF.
+function printYearPlan() {
+  const plan = state.yearPlan;
+  if (!plan) return;
+  syncYearPlanFromCurrent();
+  const rules = plan.rules || state.rules;
+  const names = state.nurses.map(n => n.name);
+  const cls = c =>
+    ({ M: 'cM', P: 'cP', D: 'cD', N: 'cN', S: 'cS', R: 'cR' })[c] || (c === 'F' || c === 'F0' ? 'cF' : 'cA');
+  const fmt = x => (x >= 0 ? '+' : '') + x.toFixed(1).replace('.', ',');
+  const pages = plan.months.map(m => {
+    const numDays = m.schedule[0].length;
+    const red = d => dayOfWeek(m.year, m.month, d + 1) === 0 || isFestivoItaliano(m.year, m.month, d + 1);
+    const head = Array.from(
+      { length: numDays },
+      (_, d) =>
+        `<th class="${red(d) ? 'fest' : ''}">${DOW_LABELS[dayOfWeek(m.year, m.month, d + 1)].charAt(0)}<br>${d + 1}</th>`
+    ).join('');
+    const body = m.schedule
+      .map(
+        (row, n) =>
+          `<tr><td class="name">${escHtml(names[n] || '')}</td>${row
+            .map(c => `<td class="${cls(c)}">${escHtml(c === 'F0' ? 'F' : c || '')}</td>`)
+            .join(
+              ''
+            )}<td class="tot">${(Math.round(m.hours[n] * 10) / 10).toFixed(1).replace('.', ',')}</td><td class="tot">${fmt(
+            m.hours[n] - m.monte
+          )}</td><td class="tot">${row.filter(c => c === 'N').length}</td></tr>`
+      )
+      .join('');
+    const covRow = (label, test, min) => {
+      const cells = Array.from({ length: numDays }, (_, d) => {
+        const v = m.schedule.reduce((a, row) => a + (test(row[d]) ? 1 : 0), 0);
+        return `<td class="${v < min ? 'low' : ''}">${v}</td>`;
+      }).join('');
+      return `<tr class="cov"><td class="name">${label}</td>${cells}<td colspan="3"></td></tr>`;
+    };
+    const hasD = m.schedule.some(row => row.includes('D'));
+    return `<section><h2>${MONTHS_IT[m.month]} ${m.year} <small>monte ore ${m.monte.toFixed(2).replace('.', ',')} h</small></h2>
+      <table><tr><th class="name">Infermiere</th>${head}<th class="tot">Ore</th><th class="tot">Δ</th><th class="tot">N</th></tr>${body}
+      ${covRow('Mattina', c => c === 'M' || c === 'D', rules.minCoverageM)}
+      ${covRow('Pomeriggio', c => c === 'P' || c === 'D', rules.minCoverageP)}
+      ${hasD ? covRow('Diurni', c => c === 'D', rules.minCoverageD) : ''}
+      ${covRow('Notte', c => c === 'N', rules.minCoverageN)}</table></section>`;
+  });
+  const first = plan.months[0];
+  const lastM = plan.months[plan.months.length - 1];
+  const html = `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Turni ${MONTHS_IT[first.month]} ${first.year} – ${
+    MONTHS_IT[lastM.month]
+  } ${lastM.year}</title><style>
+    @page { size: A4 landscape; margin: 7mm; }
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; color: #1f2933; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    section { page-break-after: always; break-after: page; }
+    section:last-child { page-break-after: auto; }
+    h2 { font-size: 13pt; margin: 0 0 1.5mm; color: #1e3a8a; } h2 small { font-size: 8pt; color: #52606d; font-weight: 400; }
+    table { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 6.6pt; }
+    th, td { border: 0.15mm solid #9aa5b1; text-align: center; padding: 0; height: 4.1mm; }
+    th { background: #e4e7eb; font-size: 5.8pt; height: 6mm; } th.fest { background: #fde2e1; color: #b42318; }
+    .name { width: 34mm; text-align: left; padding-left: 1mm; white-space: nowrap; overflow: hidden; }
+    .tot { width: 8mm; background: #f5f7fa; }
+    .cM { background: #fff3b0; } .cP { background: #ffc98b; } .cD { background: #8fdcc4; font-weight: 700; }
+    .cN { background: #1e3a8a; color: #fff; font-weight: 700; } .cS { background: #bcd7ff; } .cR { background: #e3f3e5; }
+    .cF { background: #d9c6f5; } .cA { background: #d0d4d9; }
+    tr.cov td { background: #f5f7fa; font-weight: 700; } tr.cov td.low { background: #fcd4d1; color: #b42318; }
+  </style></head><body>${pages.join('')}</body></html>`;
+  const w = window.open('', '_blank');
+  if (!w) {
+    alert('Il browser ha bloccato la nuova finestra: consenti i popup per stampare l’anno.');
+    return;
+  }
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 400);
+}
+
 function exportCSV() {
   if (!state.schedule) return;
   const numDays = daysInMonth(state.year, state.month);
@@ -4338,6 +4843,7 @@ function init() {
   // ---- Step 4 ----
   document.getElementById('btn-step4-back')?.addEventListener('click', () => goToStep(3));
   document.getElementById('btn-generate')?.addEventListener('click', startSolver);
+  document.getElementById('btn-generate-year')?.addEventListener('click', startYearSolver);
 
   // ---- Step 5 ----
   document.getElementById('btn-step5-back')?.addEventListener('click', () => goToStep(4));

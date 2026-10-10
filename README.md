@@ -14,7 +14,7 @@ solver nei log runtime via `/api/log`).
 ## Funzionalita
 
 - **Wizard a 5 step** — Organico → Regole → Continuità → Genera → Risultati
-- **Motore di scheduling** — **Generatore a matrici** (default di Auto): ogni riga è costruita con programmazione dinamica esatta sulla matrice del profilo (riposi solo dopo lo smonto, D-N-S-R-R, 5+2) con ore e notti come vincoli, poi le righe vengono coordinate sulle coperture. Opzione "Consenti una doppia notte al mese" (N-N-S-R-R, una volta al mese per turnista) per coprire più notti con lo stesso organico. Restano disponibili Pattern Beam ed euristica greedy + simulated annealing per confronto
+- **Motore di scheduling** — **Generatore a matrici** (default di Auto): ogni riga è costruita con programmazione dinamica esatta sulla matrice del profilo (riposi solo dopo lo smonto, D-N-S-R-R, 5+2) con ore e notti come vincoli, poi le righe vengono coordinate sulle coperture. Opzione "Consenti una doppia notte al mese" (N-N-S-R-R, una volta al mese per turnista) per coprire più notti con lo stesso organico. **Genera tutto l'anno**: 12 mesi in fila con continuità, saldo ore ed equità notti/festivi (opzione di compensazione annuale delle ore, con previsione per i mesi pesanti della matrice D/N), piano annuale nei risultati con apertura mese per mese, CSV e stampa/PDF dell'anno. Restano disponibili Pattern Beam ed euristica greedy + simulated annealing per confronto
 - **Matrici rigide** — M/P 5 lavoro + 2 riposi adiacenti (fasi coordinate di gruppo), D-N-S-R-R
 - **Prepara mese successivo** — la griglia generata diventa automaticamente continuità, riporto ore ed equità del mese dopo
 - **Equità di lungo periodo** — notti e festivi lavorati si bilanciano tra un mese e l'altro
